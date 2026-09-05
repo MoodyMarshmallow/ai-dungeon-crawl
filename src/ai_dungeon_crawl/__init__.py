@@ -1,2 +1,5 @@
-def main() -> None:
-    print("Hello from ai-dungeon-crawl!")
+"""AI Dungeon Crawl: a Python harness for playing DCSS with language models."""
+
+from .cli import main
+
+__all__ = ["main"]
