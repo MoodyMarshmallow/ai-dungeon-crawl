@@ -3,7 +3,7 @@
 import asyncio
 from typing import Tuple
 
-from .contracts import Action, ModelTurn, Observation, TurnRecord
+from .contracts import GameAction, AgentTurn, GameObservation, AgentTurnRecord
 from .episode import EpisodeRunner
 
 
@@ -12,19 +12,19 @@ class MockGameSession:
         self.position = 0
         self.closed = False
 
-    def _observe(self) -> Observation:
+    def _observe(self) -> GameObservation:
         row = ["."] * 4
         row[self.position] = "@"
-        return Observation(
+        return GameObservation(
             id=self.position,
             screen="######\n#" + "".join(row) + "#\n######",
             ended=self.position == 3,
         )
 
-    async def start(self) -> Observation:
+    async def start(self) -> GameObservation:
         return self._observe()
 
-    async def step(self, action: Action) -> Observation:
+    async def step(self, action: GameAction) -> GameObservation:
         if self.closed or self.position == 3:
             raise RuntimeError("Session is not accepting input")
         if action.key != "l":
@@ -38,10 +38,10 @@ class MockGameSession:
 
 class ScriptedPolicy:
     async def request_turn(
-        self, observation: Observation, history: Tuple[TurnRecord, ...]
-    ) -> ModelTurn:
+        self, observation: GameObservation, history: Tuple[AgentTurnRecord, ...]
+    ) -> AgentTurn:
         if not history:
-            return ModelTurn("""moves = 0
+            return AgentTurn("""moves = 0
 async def walk(count):
     global moves
     for _ in range(count):
@@ -52,14 +52,14 @@ async def walk(count):
 await walk(2)
 print("Moves so far:", moves)
 """)
-        return ModelTurn('await walk(1)\nprint("Total moves:", moves)')
+        return AgentTurn('await walk(1)\nprint("Total moves:", moves)')
 
 
 async def run_demo() -> None:
     result = await EpisodeRunner(MockGameSession(), ScriptedPolicy()).run()
     print("REPL demo (simulated game, no model calls)")
     for turn in result.turns:
-        print(f"\nModel turn {turn.id}: {len(turn.steps)} actions")
+        print(f"\nAgent turn {turn.id}: {len(turn.steps)} actions")
         print(turn.execution.output, end="")
     for step in result.steps:
         print(f"\nObservation {step.before.id}: send {step.action.key!r}")

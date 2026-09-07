@@ -22,7 +22,7 @@ async def run(backend: str, model: str | None, max_steps: int, max_turns: int):
         max_steps=max_steps, max_turns=max_turns,
     )
     for record in result.turns:
-        print(f"\nModel turn {record.id}: {len(record.steps)} actions; {record.execution.status}")
+        print(f"\nAgent turn {record.id}: {len(record.steps)} actions; {record.execution.status}")
         print(record.execution.output, end="")
         if record.execution.error:
             print(record.execution.error)

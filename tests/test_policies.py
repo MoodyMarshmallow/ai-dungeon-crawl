@@ -16,11 +16,11 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from ai_dungeon_crawl.contracts import Action, ExecutionResult, ModelTurn, Observation, Step, TurnRecord
+from ai_dungeon_crawl.contracts import GameAction, ExecutionResult, AgentTurn, GameObservation, GameStep, AgentTurnRecord
 from ai_dungeon_crawl.policies import CodexPolicy, PydanticPolicy, create_policy
 
 
-OBSERVATION = Observation(0, "######\n#@...#\n######")
+OBSERVATION = GameObservation(0, "######\n#@...#\n######")
 
 
 def response(code='await press("l")'):
@@ -90,9 +90,9 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             prompts.append(json.loads(user_parts[0].content))
             return response("pass")
 
-        after = Observation(1, "next screen")
-        record = TurnRecord(0, ModelTurn("pass"), ExecutionResult(after, "feedback"),
-                            (Step(OBSERVATION, Action("l"), after),))
+        after = GameObservation(1, "next screen")
+        record = AgentTurnRecord(0, AgentTurn("pass"), ExecutionResult(after, "feedback"),
+                            (GameStep(OBSERVATION, GameAction("l"), after),))
         history = (record, replace(record, id=1))
         policy = PydanticPolicy(FunctionModel(model), history_turns=1)
         await policy.request_turn(after, history)

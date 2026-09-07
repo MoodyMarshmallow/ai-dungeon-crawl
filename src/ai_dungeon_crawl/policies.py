@@ -14,15 +14,15 @@ from pydantic_ai import Agent, ToolOutput
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
-from .contracts import ModelTurn, Observation, Policy, TurnRecord
+from .contracts import AgentTurn, GameObservation, Policy, AgentTurnRecord, validate_python_source
 
 
 INSTRUCTIONS = """You control a game through a persistent Python REPL.
 Return one Python script for execute_python. Do not execute it yourself, use
 shell commands, inspect local files, or call other tools. The harness executes
-your returned script once and supplies its feedback on the next model turn.
+your returned script once and supplies its feedback on the next agent turn.
 
-The REPL provides observe() -> Observation and await press(key) -> Observation.
+The REPL provides observe() -> GameObservation and await press(key) -> GameObservation.
 Observations have id, screen (whitespace-preserving text), and ended (process exit).
 press accepts one printable character, ENTER, ESC, TAB, BACKSPACE, UP, DOWN,
 LEFT, RIGHT, or CTRL+A through CTRL+Z. Each press waits until input is ready.
@@ -49,11 +49,11 @@ class PythonScript(BaseModel):
     @field_validator("code")
     @classmethod
     def check_source_size(cls, value: str) -> str:
-        ModelTurn(value)
+        validate_python_source(value)
         return value
 
 
-def _prompt(observation: Observation, history: tuple[TurnRecord, ...], goal: str,
+def _prompt(observation: GameObservation, history: tuple[AgentTurnRecord, ...], goal: str,
             history_turns: int, max_context_chars: int) -> str:
     """Keep the full current screen and only recent whole turn records that fit."""
     payload = {"goal": goal, "observation": asdict(observation), "history": [],
@@ -99,8 +99,8 @@ class PydanticPolicy:
         self.timeout_seconds, self.max_requests = timeout_seconds, max_requests
         self.history_turns, self.max_context_chars = history_turns, max_context_chars
 
-    async def request_turn(self, observation: Observation,
-                           history: tuple[TurnRecord, ...]) -> ModelTurn:
+    async def request_turn(self, observation: GameObservation,
+                           history: tuple[AgentTurnRecord, ...]) -> AgentTurn:
         prompt = _prompt(observation, history, self.goal, self.history_turns,
                          self.max_context_chars)
         # This is an output tool: Pydantic validates data, but does not execute code.
@@ -113,7 +113,7 @@ class PydanticPolicy:
         async with asyncio.timeout(self.timeout_seconds):
             async with agent:
                 result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=self.max_requests))
-        return ModelTurn(result.output.code, model_requests=result.usage.requests)
+        return AgentTurn(result.output.code, model_requests=result.usage.requests)
 
 
 class CodexPolicy:
@@ -132,8 +132,8 @@ class CodexPolicy:
         self.timeout_seconds = timeout_seconds
         self.history_turns, self.max_context_chars = history_turns, max_context_chars
 
-    async def request_turn(self, observation: Observation,
-                           history: tuple[TurnRecord, ...]) -> ModelTurn:
+    async def request_turn(self, observation: GameObservation,
+                           history: tuple[AgentTurnRecord, ...]) -> AgentTurn:
         executable = shutil.which(self.executable)
         if executable is None:
             raise RuntimeError("Codex CLI is missing. Install it and sign in with ChatGPT using codex login.")
@@ -185,7 +185,7 @@ class CodexPolicy:
                 raise ValueError("Codex response exceeds the size limit")
             script = PythonScript.model_validate_json(output.read_text(encoding="utf-8"))
             # CLI turn counts are not a reliable count of internal model requests.
-            return ModelTurn(script.code, model_requests=None)
+            return AgentTurn(script.code, model_requests=None)
 
     async def _run(self, command, environment, directory, prompt):
         process = await asyncio.create_subprocess_exec(

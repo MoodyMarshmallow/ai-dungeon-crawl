@@ -10,7 +10,7 @@ import sys
 import tempfile
 from typing import Awaitable, Callable
 
-from .contracts import Action, ExecutionResult, ModelTurn, Observation
+from .contracts import GameAction, ExecutionResult, GameObservation, validate_python_source
 
 
 class StopExecution(Exception):
@@ -25,11 +25,15 @@ class PythonRepl:
     """One sandboxed worker/namespace per episode; never run concurrently.
 
     macOS only for now. Unsupported platforms or unavailable sandboxing fail
-    closed. No unsandboxed fallback. The timeout covers worker execution and
-    IPC, not time spent awaiting the game's own independently bounded I/O.
+    closed.
     """
 
     def __init__(self, *, timeout_seconds: float = 5, max_output_chars: int = 8000):
+        """Set per-script time and output limits; launch the worker on first use.
+
+        The time budget excludes time spent waiting for game actions. The output
+        limit counts characters across both stdout and stderr for each script.
+        """
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         if not 0 <= max_output_chars <= 65536:
@@ -42,6 +46,13 @@ class PythonRepl:
         self._busy = False
 
     async def _start(self):
+        """Launch the sandboxed Python worker and wait for its ready message.
+
+        Reuse an existing worker so variables survive between scripts. A new
+        worker gets a temporary working directory, restricted permissions, and
+        pipes for exchanging JSON messages. Startup has a ten-second deadline;
+        a closed REPL or unavailable sandbox raises instead of running unsafely.
+        """
         if self._closed:
             raise RuntimeError("REPL is closed; use a fresh REPL for each episode")
         if self._process is not None:
@@ -85,6 +96,9 @@ class PythonRepl:
             raise RuntimeError("REPL worker did not initialize")
 
     async def _read(self):
+        """
+        Read one newline-delimited JSON object from the worker's stdout.
+        """
         line = await self._process.stdout.readline()
         if not line:
             error = await self._process.stderr.read(2000)
@@ -95,25 +109,28 @@ class PythonRepl:
         return message
 
     async def _send(self, message):
+        """
+        Write one JSON message to the worker's stdin and drain the write buffer.
+        """
         self._process.stdin.write((json.dumps(message) + "\n").encode())
         await self._process.stdin.drain()
 
     async def _bounded(self, operation, remaining):
+        """
+        Await an operation within the remaining time budget, in seconds.
+        """
         try:
             return await asyncio.wait_for(operation, timeout=max(0, remaining))
         except asyncio.TimeoutError as exc:
             raise _WorkerTimeout() from exc
 
     async def execute_python(
-        self, code: str, observation: Observation,
-        press: Callable[[Action], Awaitable[Observation]],
+        self, code: str, observation: GameObservation,
+        press: Callable[[GameAction], Awaitable[GameObservation]],
     ) -> ExecutionResult:
-        """Execute once; return output/errors and the latest real screen.
+        """Run one script in the persistent worker and collect its feedback."""
 
-        Python errors are feedback, not rollback. Game/transport failures raise
-        and close the worker. Timeouts stop the worker and end the episode.
-        """
-        ModelTurn(code)
+        validate_python_source(code)
         if self._busy:
             raise RuntimeError("Concurrent REPL executions are not supported")
         self._busy = True
@@ -145,8 +162,8 @@ class PythonRepl:
                     try:
                         key = message.get("key")
                         if not isinstance(key, str):
-                            raise ValueError("Action key must be text")
-                        action = Action(key)
+                            raise ValueError("GameAction key must be text")
+                        action = GameAction(key)
                     except ValueError as exc:
                         await self._bounded(self._send({"error": str(exc)}), deadline - loop.time())
                         continue
@@ -179,6 +196,9 @@ class PythonRepl:
             self._busy = False
 
     async def close(self) -> None:
+        """
+        Kill the worker, drain its pipes, and remove its temporary directory.
+        """
         self._closed = True
         try:
             if self._process is not None:

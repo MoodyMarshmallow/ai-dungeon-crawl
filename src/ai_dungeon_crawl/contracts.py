@@ -5,7 +5,7 @@ from typing import Literal, Optional, Protocol, Tuple
 
 
 @dataclass(frozen=True)
-class Observation:
+class GameObservation:
     """A complete rendered screen at an input boundary, or after game exit.
 
     IDs increase within a session, including when the screen is unchanged.
@@ -20,7 +20,7 @@ class Observation:
 
 
 @dataclass(frozen=True)
-class Action:
+class GameAction:
     """One printable character or named key; no macros or arbitrary bytes.
 
     Session implementations translate named keys to terminal input. This
@@ -34,31 +34,49 @@ class Action:
         control = len(self.key) == 6 and self.key.startswith("CTRL+") and "A" <= self.key[-1] <= "Z"
         printable = len(self.key) == 1 and self.key.isprintable()
         if not (printable or control or self.key in named):
-            raise ValueError("Action must contain one printable character or a named key")
+            raise ValueError("GameAction must contain one printable character or a named key")
 
 
 @dataclass(frozen=True)
-class Step:
-    before: Observation
-    action: Action
-    after: Observation
+class GameStep:
+    """One completed game action with its before and after observations."""
+
+    before: GameObservation
+    action: GameAction
+    after: GameObservation
 
 
 @dataclass(frozen=True)
-class EpisodeResult:
+class GameEpisodeResult:
+    """The outcome and recorded progress of one game episode."""
+
     stop_reason: Literal["game_exited", "step_limit", "turn_limit", "repl_timeout"]
-    final_observation: Observation
-    steps: Tuple[Step, ...]
-    turns: Tuple["TurnRecord", ...]
+    final_observation: GameObservation
+    steps: Tuple[GameStep, ...]
+    turns: Tuple["AgentTurnRecord", ...]
+
+
+def validate_python_source(code: str) -> None:
+    """Raise ValueError unless code is text of at most 64 KiB in UTF-8.
+
+    This checks input type and size, not Python syntax or execution safety.
+    Empty source is allowed; syntax errors are handled during REPL execution.
+    """
+    if not isinstance(code, str) or len(code.encode("utf-8")) > 65536:
+        raise ValueError("Code must be text of at most 64 KiB")
 
 
 @dataclass(frozen=True)
-class ModelTurn:
-    """One execute_python submission; it may cause zero or many game actions.
+class AgentTurn:
+    """The accepted script output of one agent decision cycle.
 
-    model_requests counts model calls including output repair (not hidden
+    Submitting this code ends the agent turn; the harness executes it afterward.
+    Execution may cause zero or many game actions, and its feedback starts the
+    next agent turn. This value is not a transcript of individual model turns.
+
+    model_requests counts logical model invocations including output repair (not hidden
     transport retries). Zero denotes a scripted policy; None means the backend
-    does not expose a reliable count. One tool submission per model turn.
+    does not expose a reliable count. One tool submission per agent turn.
     """
 
     code: str
@@ -67,15 +85,14 @@ class ModelTurn:
     def __post_init__(self) -> None:
         if self.model_requests is not None and self.model_requests < 0:
             raise ValueError("model_requests cannot be negative")
-        if not isinstance(self.code, str) or len(self.code.encode("utf-8")) > 65536:
-            raise ValueError("Code must be text of at most 64 KiB")
+        validate_python_source(self.code)
 
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    """Feedback for the next model turn, including partial output on failure."""
+    """Feedback for the next agent turn, including partial output on failure."""
 
-    observation: Observation
+    observation: GameObservation
     output: str = ""
     error: Optional[str] = None
     status: Literal["ok", "error", "timeout", "stopped"] = "ok"
@@ -83,11 +100,13 @@ class ExecutionResult:
 
 
 @dataclass(frozen=True)
-class TurnRecord:
+class AgentTurnRecord:
+    """An agent turn's submission, execution feedback, and completed game steps."""
+
     id: int
-    turn: ModelTurn
+    turn: AgentTurn
     execution: ExecutionResult
-    steps: Tuple[Step, ...]
+    steps: Tuple[GameStep, ...]
 
 
 class GameSession(Protocol):
@@ -99,9 +118,9 @@ class GameSession(Protocol):
     Timeouts/crashes raise exceptions; they are not successful observations.
     """
 
-    async def start(self) -> Observation: ...
+    async def start(self) -> GameObservation: ...
 
-    async def step(self, action: Action) -> Observation:
+    async def step(self, action: GameAction) -> GameObservation:
         """Send once, then observe. Never automatically retry a sent action."""
         ...
 
@@ -114,14 +133,17 @@ class GameSession(Protocol):
 
 
 class Policy(Protocol):
-    """Requests one Python submission using observations and prior turn records.
+    """Run an agent decision cycle using game feedback and prior agent turns.
 
     Owns prompt construction, context selection and bounded model retries.
+    A cycle may involve multiple model turns and ends with one accepted script.
     Has no game or REPL handle: the runner dispatches execute_python after
     request_turn returns. History includes script output, errors and steps.
     Model clients are configured/closed by the caller, outside the episode.
     """
 
     async def request_turn(
-        self, observation: Observation, history: Tuple[TurnRecord, ...]
-    ) -> ModelTurn: ...
+        self, observation: GameObservation, history: Tuple[AgentTurnRecord, ...]
+    ) -> AgentTurn:
+        """Return the accepted script submission that ends this agent turn."""
+        ...

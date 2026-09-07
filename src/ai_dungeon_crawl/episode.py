@@ -1,10 +1,10 @@
-"""Own the model-turn loop and mediate every game input from the REPL."""
+"""Own the agent-turn loop and mediate every game input from the REPL."""
 
 import logging
 import sys
 from typing import Optional
 
-from .contracts import EpisodeResult, GameSession, Policy, Step, TurnRecord
+from .contracts import GameEpisodeResult, GameSession, Policy, GameStep, AgentTurnRecord
 from .repl import PythonRepl, StopExecution
 
 
@@ -16,9 +16,9 @@ class EpisodeRunner:
         self._policy = policy
         self._repl = repl if repl is not None else PythonRepl()
 
-    async def run(self, *, max_steps: int = 100, max_turns: int = 50) -> EpisodeResult:
+    async def run(self, *, max_steps: int = 100, max_turns: int = 50) -> GameEpisodeResult:
         if max_steps < 0 or max_turns < 0:
-            raise ValueError("Action and model-turn limits cannot be negative")
+            raise ValueError("GameAction and agent-turn limits cannot be negative")
         steps, turns = [], []
         try:
             observation = await self._game.start()
@@ -28,11 +28,11 @@ class EpisodeRunner:
                 if observation.ended:
                     raise StopExecution("Game exited")
                 if len(steps) >= max_steps:
-                    raise StopExecution("Action limit reached")
+                    raise StopExecution("GameAction limit reached")
                 following = await self._game.step(action)
                 if following.id <= observation.id:
-                    raise ValueError("Observation IDs must increase after each action")
-                steps.append(Step(observation, action, following))
+                    raise ValueError("GameObservation IDs must increase after each action")
+                steps.append(GameStep(observation, action, following))
                 observation = following
                 return observation
 
@@ -40,7 +40,7 @@ class EpisodeRunner:
                 turn = await self._policy.request_turn(observation, tuple(turns))
                 first_step = len(steps)
                 execution = await self._repl.execute_python(turn.code, observation, press)
-                turns.append(TurnRecord(len(turns), turn, execution, tuple(steps[first_step:])))
+                turns.append(AgentTurnRecord(len(turns), turn, execution, tuple(steps[first_step:])))
                 if execution.status == "timeout":
                     break
 
@@ -52,7 +52,7 @@ class EpisodeRunner:
                 reason = "repl_timeout"
             else:
                 reason = "turn_limit"
-            return EpisodeResult(reason, observation, tuple(steps), tuple(turns))
+            return GameEpisodeResult(reason, observation, tuple(steps), tuple(turns))
         finally:
             # Attempt both cleanups and preserve the original failure, if any.
             original_error = sys.exc_info()[1]

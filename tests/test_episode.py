@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ai_dungeon_crawl.contracts import Action, ModelTurn, Observation
+from ai_dungeon_crawl.contracts import GameAction, AgentTurn, GameObservation
 from ai_dungeon_crawl.demo import MockGameSession, ScriptedPolicy
 from ai_dungeon_crawl.episode import EpisodeRunner
 from ai_dungeon_crawl.repl import PythonRepl
@@ -19,7 +19,7 @@ class CodePolicy:
 
     async def request_turn(self, observation, history):
         self.histories.append(history)
-        return ModelTurn(self.scripts[len(history) % len(self.scripts)], model_requests=2)
+        return AgentTurn(self.scripts[len(history) % len(self.scripts)], model_requests=2)
 
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("sandbox-exec"),
@@ -167,7 +167,7 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertTrue(game.closed)
         with self.assertRaisesRegex(RuntimeError, "closed"):
-            await repl.execute_python("pass", Observation(0, ""), game.step)
+            await repl.execute_python("pass", GameObservation(0, ""), game.step)
 
     async def test_sandbox_denies_file_read_write_network_and_fork(self):
         # Only artificial data: never probe real user secrets in security tests.
@@ -201,20 +201,20 @@ class ContractTests(unittest.IsolatedAsyncioTestCase):
     def test_rejects_macros_and_raw_control_sequences(self):
         for key in ("ll", "\n", "\x1b[A", ""):
             with self.assertRaises(ValueError):
-                Action(key)
-        self.assertEqual(Action("CTRL+S").key, "CTRL+S")
+                GameAction(key)
+        self.assertEqual(GameAction("CTRL+S").key, "CTRL+S")
 
-    def test_model_turn_limits_source_and_usage(self):
+    def test_agent_turn_limits_source_and_usage(self):
         with self.assertRaises(ValueError):
-            ModelTurn("pass", model_requests=-1)
+            AgentTurn("pass", model_requests=-1)
         with self.assertRaises(ValueError):
-            ModelTurn("x" * 65537)
+            AgentTurn("x" * 65537)
 
     async def test_unsupported_platform_fails_closed(self):
         repl = PythonRepl()
         with patch("ai_dungeon_crawl.repl.sys.platform", "unsupported"):
             with self.assertRaisesRegex(RuntimeError, "no unsafe fallback"):
-                await repl.execute_python("pass", Observation(0, ""), MockGameSession().step)
+                await repl.execute_python("pass", GameObservation(0, ""), MockGameSession().step)
 
 
 if __name__ == "__main__":

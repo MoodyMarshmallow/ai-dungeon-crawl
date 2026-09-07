@@ -10,7 +10,7 @@ uv run ai-dungeon-crawl
 ```
 
 Run from this repository on macOS. The demo performs three game actions across
-two model turns. Its second script reuses a helper and variable defined by the
+two agent turns. Its second script reuses a helper and variable defined by the
 first script. The default scripted policy needs no credentials or model calls.
 `uv` installs the project's Python 3.12 runtime and dependencies as needed.
 
@@ -64,7 +64,7 @@ are configurable with `--max-steps` and `--max-turns`.
 result = await EpisodeRunner(game, policy).run(max_steps=100, max_turns=50)
 ```
 
-`EpisodeRunner` owns the model-turn loop, enforces limits on every game input,
+`EpisodeRunner` owns the agent-turn loop, enforces limits on every game input,
 records transitions, and closes both the game and REPL on completion or failure.
 Supply a fresh game session and REPL for each episode.
 
@@ -82,16 +82,16 @@ game process or the model client. There is no extra runner protocol or factory.
 
 ## The model's REPL
 
-One model turn submits one script. That script can perform zero or many game
+One agent turn submits one script. That script can perform zero or many game
 actions. The model submits `execute_python(code)` (or equivalent structured JSON
-for Codex), represented as `ModelTurn(code, model_requests)`.
+for Codex), represented as `AgentTurn(code, model_requests)`.
 The scripted policy exercises that same path without a provider SDK.
 
 Scripts have two game helpers:
 
 ```python
 obs = observe()          # latest screen; does not send input
-obs = await press("l")   # one key, wait for readiness, return new Observation
+obs = await press("l")   # one key, wait for readiness, return new GameObservation
 print(obs.screen)
 ```
 
@@ -101,7 +101,7 @@ are refreshed before each script; observations expose `id`, `screen`, and `ended
 Use `print()` for output; expression values are not implicitly displayed.
 Background async tasks do not persist between executions.
 
-The next `request_turn(observation, history)` receives `TurnRecord` history,
+The next `request_turn(observation, history)` receives `AgentTurnRecord` history,
 including code, output, errors, and per-key steps. Every execution result also
 includes the latest observation, even if the script did not print it.
 Scripts can inspect intermediate screens; the model receives feedback only
@@ -109,21 +109,21 @@ after the script finishes. Advanced game-specific stop predicates are deferred.
 
 ## The data crossing those interfaces
 
-- `Observation`: a complete screen, a session-local observation ID, and whether
+- `GameObservation`: a complete screen, a session-local observation ID, and whether
   the process ended. Whitespace matters. A prompt or menu is an observation too.
-- `Action`: one printable character or named key such as `ENTER` or `CTRL+S`.
+- `GameAction`: one printable character or named key such as `ENTER` or `CTRL+S`.
   The game adapter translates it to bytes. A valid key can still be an illegal
   move; the next observation shows what happened.
-- `Step`: the before observation, action and after observation.
-- `ModelTurn`: submitted Python code and model-request count, including any
+- `GameStep`: the before observation, action and after observation.
+- `AgentTurn`: submitted Python code and model-request count, including any
   output-repair attempts. A scripted policy reports zero; Codex reports `None`
   because CLI events do not reliably expose internal model-request counts.
 - `ExecutionResult`: latest observation, bounded output, error, and execution status.
-- `TurnRecord`: a model turn, its execution result, and its completed steps.
-  Its `steps` collection groups actions under the model turn that produced them.
-- `EpisodeResult`: stop reason, final observation, all steps and all turn records.
+- `AgentTurnRecord`: an agent turn, its execution result, and its completed steps.
+  Its `steps` collection groups actions under the agent turn that produced them.
+- `GameEpisodeResult`: stop reason, final observation, all steps and all turn records.
 
-Model-request counts are recorded once per model turn, not repeated per key.
+Model-request counts are recorded once per agent turn, not repeated per key.
 Turn IDs are zero-based within an episode. See `CONTEXT.md` for terminology.
 
 See `src/ai_dungeon_crawl/contracts.py` for the contracts and `episode.py` for
@@ -142,7 +142,7 @@ the short orchestration implementation. `demo.py` supplies both mock adapters;
    fail. No new key is sent after exit or exhaustion, even inside a loop that
    catches exceptions. Scripts are never automatically rerun.
 4. **Script errors preserve partial progress.** Syntax/runtime errors and invalid
-   keys become execution feedback for the next model turn. Completed steps,
+   keys become execution feedback for the next agent turn. Completed steps,
    output and namespace changes remain; execution is not transactional.
 5. **Cleanup is unconditional.** A session closes even after failed startup,
    policy failure, step failure or cancellation. Each real session gets a fresh
