@@ -2,17 +2,89 @@
 
 A Python harness for language models playing Dungeon Crawl Stone Soup (DCSS).
 This repository contains a working Python REPL and agent loop with a **mock game**,
-a scripted policy, and real Codex and PydanticAI model policies. The DCSS game
+and real Codex and PydanticAI model policies. The DCSS game
 connection is not implemented yet.
 
 ```sh
 uv run ai-dungeon-crawl
 ```
 
-Run from this repository on macOS. The demo performs three game actions across
-two agent turns. Its second script reuses a helper and variable defined by the
-first script. The default scripted policy needs no credentials or model calls.
+Run from this repository on macOS. Codex is the default agent and uses your
+existing Codex login. The game is a four-cell corridor mock.
 `uv` installs the project's Python 3.12 runtime and dependencies as needed.
+
+## Local dashboard
+
+The dashboard is TypeScript, served and bundled by Bun. The game harness and
+sandboxed REPL stay in Python; Bun launches one Python process per episode and
+consumes its newline-delimited display events. No Python HTTP server is needed.
+
+The interface is intentionally minimal: three resizable panes and start/stop
+controls inside the sidebar. [xterm.js](https://xtermjs.org/) renders the game
+screen and a scrolling Python transcript of submitted code and output. Model
+responses are warm white; execution returns are blue. Fonts and
+component assets are served locally. The displays never send terminal input to
+the game or REPL. Incoming text controls are stripped before rendering because
+current observations are plain-text snapshots, not trusted ANSI streams.
+
+From the repository root:
+
+```sh
+uv sync
+cd dashboard
+bun install
+bun run dev
+```
+
+Open `http://127.0.0.1:8765`, then click **Start**. Opening or refreshing
+the page does not call a model. Codex (`gpt-5.6-luna`) is the default, using your
+existing Codex login and streaming reasoning summaries. To override the model:
+
+```sh
+bun run dev --model gpt-5.6-luna
+```
+
+Or select `--policy pydantic --model 'provider:model'`. `--port`, `--max-steps`,
+and `--max-turns` configure the server and episode limits. Configuration is fixed
+at server startup; restart the server to change it. No automatic hot reload is
+enabled, so saving a file never interrupts a running game.
+
+- Top left: latest game screen, updated after each completed keypress.
+- Bottom left: syntax-highlighted Python submissions, live output, and errors.
+  This is a read-only execution log, not an interactive Python console or
+  a variable inspector. The sandbox namespace persists across submissions.
+- Right: live model text, provider-exposed reasoning, and tool arguments. The
+  Responses-only `--reasoning-summary` flag requests summaries where supported;
+  it does not expose hidden reasoning and is not supported by every model.
+  Messages and summaries support Markdown; tool calls have highlighted code boxes.
+
+Streamed code is **preview only**. PydanticAI still validates the complete
+`execute_python` call before the runner executes it; text-only, multiple-tool,
+and incomplete Codex responses remain rejected. Output repair requests appear
+separately in the model activity log. The ordinary command-line runner remains
+unchanged when no observer is attached.
+
+The browser reconnects to the latest snapshot without restarting the episode.
+The dashboard retains the last 30 requests/submissions, up to 16 parts per model
+response and 65,536 characters per preview; this is a bounded in-memory monitor,
+not durable recording. Slow browsers receive coalesced snapshots rather than
+blocking gameplay. **Stop** cancels the harness and closes the REPL; closing the
+browser alone does not stop a run. Ctrl+C shuts down the server and its episode.
+The Python bridge also cancels its episode if the Bun parent disappears.
+
+The server binds only to loopback and rejects cross-origin controls and unexpected
+Host headers. Markdown disables raw HTML and images; code is escaped before highlighting.
+Game and REPL output cannot supply terminal controls. OAuth credentials,
+encrypted reasoning, signatures, and raw provider errors are not sent to the
+browser. This is a local development tool, not an authenticated remote service.
+
+The game is still the **corridor mock**, not DCSS. Connecting a real `GameSession`
+is separate work; the monitoring events already come from the shared runner.
+
+```sh
+bun run typecheck
+bun test
+```
 
 ## Model backends
 
@@ -20,16 +92,22 @@ For subscription-backed testing, install the official Codex CLI and sign in with
 ChatGPT using `codex login`, then run:
 
 ```sh
-uv run ai-dungeon-crawl --policy codex
+uv run ai-dungeon-crawl --policy codex --model gpt-5.6-luna
 ```
 
-This uses Codex's managed OAuth credentials, not an API key. Subscription usage
-limits still apply. The adapter forces ChatGPT authentication, excludes API-key
-environment variables, and never falls back to API billing. It uses ephemeral
-requests with user configuration ignored, shell/search/apps/subagents disabled,
-and a neutral read-only working directory. Your Codex configuration is not changed.
-Tested with Codex CLI 0.144.5; older versions may lack required flags and fail closed.
-An optional `--model` selects an available Codex model; otherwise Codex chooses its default.
+This calls the subscription Responses endpoint directly using the CLI's file-backed
+ChatGPT OAuth login (`$CODEX_HOME/auth.json`, otherwise `~/.codex/auth.json`).
+There is no Codex agent subprocess, MCP bridge, or final-message parser. Both
+model-backed policies require an explicit model; choose one available to your account.
+Subscription usage limits still apply, and there is no API-key fallback.
+
+Credentials are read in memory, never logged or written by the adapter, and sent
+only to the fixed subscription endpoint. The default HTTP client ignores inherited
+proxies and does not follow redirects. Missing, expired, or keychain-only logins
+fail closed: use a file-backed `codex login` before retrying. Automatic OAuth refresh
+is not implemented, to avoid rotating the CLI's shared refresh token. No changes
+are made to your Codex configuration. This backend may change independently of the
+public Responses API; it is a tested integration, not a compatibility guarantee.
 
 For API-backed testing, set your provider's credentials in the environment and
 choose an explicit model (replace the placeholder below):
@@ -44,17 +122,23 @@ OpenAI and Anthropic provider dependencies are included (`OPENAI_API_KEY` and
 providers and OpenAI-compatible endpoints without changing the runner. Other
 providers may require additional dependencies and endpoint-specific testing.
 
-Both adapters implement `Policy.request_turn`. PydanticAI validates an
-`execute_python` output-tool submission; Codex returns the equivalent structured
-JSON. Neither executes the script: only the runner's sandboxed REPL does that.
-Provider credentials are not passed to the REPL.
+Both adapters use the same `Policy.request_turn` implementation and PydanticAI
+`execute_python` output tool. Exactly one accepted call ends the agent turn.
+Ordinary assistant text, including JSON or code blocks in a final message, is
+never executable output. Neither policy executes code: the runner's sandboxed
+REPL executes the submission afterward, and supplies feedback to the next agent
+turn. No post-tool model continuation is needed. Provider credentials are never
+passed to the REPL. Multiple tool submissions in one response are rejected.
 
 The default context includes the complete current observation and up to four
 recent whole turn records, within 32,000 characters. Omitted turns are reported;
 an oversized current observation is rejected rather than silently truncated.
-There is no hidden conversation history. PydanticAI allows two logical model
-requests (one output-repair attempt) within 120 seconds; Codex has a 180-second
-deadline. Provider transport retries are separate from logical request counts.
+There is no hidden conversation history. Both adapters allow two logical model
+requests (one output-repair attempt) within 120 seconds. Provider transport retries
+are separate from logical request counts; the Codex transport disables HTTP retries.
+Codex requires streaming and `store=false`; the adapter drains that stream and
+rejects incomplete responses. Its endpoint does not support the generic output-token
+limit, so the deadline and request limit bound a turn, not a token quota.
 These limits are configurable on the policy constructors. CLI episode limits
 are configurable with `--max-steps` and `--max-turns`.
 
@@ -74,7 +158,7 @@ can satisfy them without inheriting a framework class:
 | Interface | Responsibility | Adapter |
 | --- | --- | --- |
 | `GameSession.start/step/close` | Own the isolated process, reconstruct the screen, send input, detect readiness, clean up | DCSS console process in a pseudo-terminal |
-| `Policy.request_turn` | Select context, request one Python script, report model-request count when known | `CodexPolicy`, `PydanticPolicy`, or `ScriptedPolicy` |
+| `Policy.request_turn` | Select context, request one Python script, report model-request count when known | `CodexPolicy` or `PydanticPolicy` |
 
 The runner dispatches the returned script to `PythonRepl.execute_python`.
 The REPL sends key requests back to the runner; it never receives the actual
@@ -83,9 +167,8 @@ game process or the model client. There is no extra runner protocol or factory.
 ## The model's REPL
 
 One agent turn submits one script. That script can perform zero or many game
-actions. The model submits `execute_python(code)` (or equivalent structured JSON
-for Codex), represented as `AgentTurn(code, model_requests)`.
-The scripted policy exercises that same path without a provider SDK.
+actions. The model calls the `execute_python(code)` output tool, represented as
+`AgentTurn(code, model_requests)`.
 
 Scripts have two game helpers:
 
@@ -116,8 +199,9 @@ after the script finishes. Advanced game-specific stop predicates are deferred.
   move; the next observation shows what happened.
 - `GameStep`: the before observation, action and after observation.
 - `AgentTurn`: submitted Python code and model-request count, including any
-  output-repair attempts. A scripted policy reports zero; Codex reports `None`
-  because CLI events do not reliably expose internal model-request counts.
+  output-repair attempts. Both model-backed
+  policies report their logical request count. `None` is reserved for adapters
+  that cannot expose a reliable count.
 - `ExecutionResult`: latest observation, bounded output, error, and execution status.
 - `AgentTurnRecord`: an agent turn, its execution result, and its completed steps.
   Its `steps` collection groups actions under the agent turn that produced them.
@@ -127,7 +211,7 @@ Model-request counts are recorded once per agent turn, not repeated per key.
 Turn IDs are zero-based within an episode. See `CONTEXT.md` for terminology.
 
 See `src/ai_dungeon_crawl/contracts.py` for the contracts and `episode.py` for
-the short orchestration implementation. `demo.py` supplies both mock adapters;
+the short orchestration implementation. `mock_game.py` supplies the game mock;
 `policies.py` supplies the model adapters and explicit backend selection.
 
 ## Limits and failure behavior
@@ -200,10 +284,10 @@ second implementation requires another interface.
 Tests exercise the actual sandboxed worker. In an environment that prohibits
 nested sandboxes, run them from a normal local terminal. Unsupported platforms
 skip the macOS integration tests and still test contract validation/fail-closed behavior.
-Policy tests use simulated model responses, an offline OpenAI client transport,
-and a stub Codex executable; they make no paid model calls. A live Codex smoke
-test has also completed the mock game through the real REPL. The PydanticAI path
-has not yet been tested against a paid live endpoint.
+Policy tests use simulated model responses and offline OpenAI Chat Completions
+and Codex Responses/SSE transports; they make no paid model calls. A live direct
+Codex Responses smoke test completed the mock game through the real output tool
+and REPL. The API-key path has not yet been tested against a paid live endpoint.
 
 ```sh
 uv run python -m unittest discover -s tests
