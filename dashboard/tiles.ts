@@ -81,7 +81,18 @@ require(["jquery","comm","game/game","game/player","game/cell_renderer","game/ti
   (async function(){
   // There is deliberately no socket or parent-message input bridge.
   comm.send_message=function(){};
-  comm.register_handlers({layer:function(message){window.set_layer(message.layer)},multi:function(message){message.msgs.forEach(function(item){if(!comm.handle_message_immediately(item))comm.handle_message(item)})}});
+  let menuDepth=0;
+  function dispatch(message){
+    // Crawl can emit a scroll before opening its menu. The spectator renderer
+    // dereferences the current menu, so discard only scrolls with no target.
+    // Track its stack semantics: replacement keeps a parent; closing reveals it.
+    if(message.msg==="menu_scroll" && menuDepth===0)return;
+    if(!comm.handle_message_immediately(message))comm.handle_message(message);
+    if(message.msg==="menu")menuDepth=message.replace?Math.max(1,menuDepth):menuDepth+1;
+    else if(message.msg==="close_menu")menuDepth=Math.max(0,menuDepth-1);
+    else if(message.msg==="close_all_menus")menuDepth=0;
+  }
+  comm.register_handlers({layer:function(message){window.set_layer(message.layer)},multi:function(message){message.msgs.forEach(dispatch)}});
   window.current_layer="crt";
   const status=document.getElementById("viewer-status");
   try {
@@ -126,7 +137,7 @@ require(["jquery","comm","game/game","game/player","game/cell_renderer","game/ti
       if(batch.messages.length) status.hidden=true;
       for(const message of batch.messages){
         if(message.msg==="flush_messages"||message.msg==="exit_reason")continue;
-        try {if(!comm.handle_message_immediately(message))comm.handle_message(message)}
+        try {dispatch(message)}
         catch(error){status.hidden=false;status.textContent="Tiles could not render this game update.";console.error(error);source.close();return}
       }
       renderInventory();

@@ -5,6 +5,90 @@ import { cellWidth, terminalUnicode } from "./unicode";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
+
+type RendererMessage = { msg: string; [key: string]: any };
+
+/** Execute the shipped browser script, including EventSource and multi dispatch. */
+async function viewerHarness() {
+  const menus: RendererMessage[] = [];
+  const errors: unknown[] = [];
+  const delivered: RendererMessage[] = [];
+  const status = { hidden: false, textContent: "" };
+  let source!: { onmessage: (event: { data: string }) => void; closed: boolean; close(): void };
+  const handlers: Record<string, (message: RendererMessage) => void> = {
+    menu(message) { if (message.replace) menus.pop(); menus.push(message); },
+    close_menu() { menus.pop(); },
+    close_all_menus() { menus.length = 0; },
+    menu_scroll(message) {
+      // The official renderer assumes a menu exists at this assignment.
+      menus[menus.length - 1]!.server_first_visible = message.first;
+    },
+    map(message) { if (message.broken) throw new Error("broken map renderer"); },
+  };
+  const comm = {
+    register_handlers(value: typeof handlers) { Object.assign(handlers, value); },
+    handle_message_immediately() { return false; },
+    handle_message(message: RendererMessage) { delivered.push(message); handlers[message.msg]?.(message); },
+  };
+  const element = { setAttribute() {}, appendChild() {}, replaceChildren() {} };
+  const jquery = () => ({ trigger() {} });
+  const require = Object.assign((_dependencies: string[], callback: Function) => callback(jquery, comm, {}, { inv: {} }, {}, {}, {}), { config() {} });
+  runInNewContext(tileScript, {
+    require, define() {}, window: {},
+    document: { querySelectorAll: () => [], createElement: () => element, getElementById: (id: string) => id === "viewer-status" ? status : element },
+    console: { error: (error: unknown) => errors.push(error) },
+    EventSource: class {
+      onmessage!: (event: { data: string }) => void;
+      closed = false;
+      constructor() { source = this; }
+      close() { this.closed = true; }
+    },
+  });
+  // The browser waits for image decoding before opening its event stream.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return { menus, errors, delivered, status, get closed() { return source.closed; }, send(messages: RendererMessage[]) { source.onmessage({ data: JSON.stringify({ run_id: 1, messages }) }); } };
+}
+
+test("viewer survives the captured orphan scroll before an ability menu", async () => {
+  const viewer = await viewerHarness();
+  viewer.send([{ msg: "menu", tag: "previous" }, { msg: "close_menu" }]);
+  viewer.send([{ msg: "menu_scroll", first: 0, last_hovered: 1, force: false }]);
+  viewer.send([{ msg: "menu", tag: "ability" }, { msg: "close_menu" }, { msg: "close_all_menus" }, { msg: "map" }]);
+  expect(viewer.errors).toEqual([]);
+  expect(viewer.closed).toBe(false);
+  expect(viewer.delivered.at(-1)?.msg).toBe("map");
+  expect(viewer.delivered.filter((message) => message.msg === "menu_scroll")).toEqual([]);
+});
+
+test("viewer scroll guard respects nested menus, replacement, close-all, and multi", async () => {
+  const viewer = await viewerHarness();
+  viewer.send([{ msg: "multi", msgs: [
+    { msg: "menu_scroll", first: 99, force: true },
+    { msg: "menu", tag: "parent" },
+    { msg: "menu", tag: "child" },
+    { msg: "menu", tag: "replacement", replace: true },
+    { msg: "menu_scroll", first: 4 },
+  ] }]);
+  expect(viewer.menus.map((menu) => [menu.tag, menu.server_first_visible])).toEqual([["parent", undefined], ["replacement", 4]]);
+  viewer.send([{ msg: "close_menu" }, { msg: "menu_scroll", first: 2 }]);
+  expect(viewer.menus.map((menu) => [menu.tag, menu.server_first_visible])).toEqual([["parent", 2]]);
+  viewer.send([{ msg: "menu", tag: "child" }, { msg: "close_all_menus" }, { msg: "close_menu" }, { msg: "menu_scroll", first: 99 }]);
+  // Replacement of an empty stack still opens a menu in the official renderer.
+  viewer.send([{ msg: "menu", tag: "new", replace: true }, { msg: "menu_scroll", first: 3, force: true }]);
+  expect(viewer.menus.map((menu) => [menu.tag, menu.server_first_visible])).toEqual([["new", 3]]);
+  expect(viewer.errors).toEqual([]);
+  expect(viewer.closed).toBe(false);
+});
+
+test("viewer still reports unrelated renderer failures and closes its stream", async () => {
+  const viewer = await viewerHarness();
+  viewer.send([{ msg: "map", broken: true }]);
+  expect(viewer.errors.map(String)).toEqual(["Error: broken map renderer"]);
+  expect(viewer.closed).toBe(true);
+  expect(viewer.status.hidden).toBe(false);
+  expect(viewer.status.textContent).toBe("Tiles could not render this game update.");
+});
 
 test("late tile viewers replay initial state and every ordered delta; reconnect resumes", async () => {
   const journal = new TileJournal();
