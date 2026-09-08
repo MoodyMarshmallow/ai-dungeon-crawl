@@ -6,12 +6,39 @@ import { codeHtml, markdownHtml } from "./rendering";
 const $ = (id: string) => document.getElementById(id)!;
 const button = (id: string) => $(id) as HTMLButtonElement;
 const game = new TerminalDisplay($("screen"), true);
-const repl = new TerminalDisplay($("repl-terminal"));
+const shell = new TerminalDisplay($("shell-terminal"));
 const entries = new Map<string, HTMLElement>();
+const turns = new Map<number, HTMLElement>();
 let current: State | null = null;
 let connected = false,
   pending = false;
 let lastRun: number | null = null;
+let settingsDirty = false;
+let savedSettings: State["config"] | null = null;
+const settingsForm = $("settings-form") as HTMLFormElement;
+const modelInput = $("setting-model") as HTMLInputElement;
+const reasoningInput = $("setting-reasoning") as HTMLSelectElement;
+const turnsInput = $("setting-turns") as HTMLInputElement;
+
+function syncSettings(state: State) {
+  if (savedSettings &&
+      state.config.model === savedSettings.model &&
+      state.config.reasoning_effort === savedSettings.reasoning_effort &&
+      state.config.max_turns === savedSettings.max_turns) {
+    settingsDirty = false;
+    savedSettings = null;
+  }
+  if (settingsDirty) return;
+  modelInput.value = state.config.model ?? "";
+  reasoningInput.value = state.config.reasoning_effort;
+  turnsInput.value = String(state.config.max_turns);
+}
+settingsForm.addEventListener("input", () => {
+  settingsDirty = true;
+  savedSettings = null;
+  text($("settings-status"), "Changes apply when you press Start.");
+});
+settingsForm.addEventListener("submit", (event) => event.preventDefault());
 
 function text(element: HTMLElement, value: string) {
   if (element.textContent !== value) element.textContent = value;
@@ -23,21 +50,25 @@ function controls() {
   button("stop").disabled =
     !connected || pending || current?.status !== "running";
   text($("status"), !connected ? "Reconnecting…" : "");
+  ($("settings-fields") as HTMLFieldSetElement).disabled =
+    !connected || pending || current?.status === "running";
 }
 
 function render(state: State) {
   current = state;
+  syncSettings(state);
   const scroll = $("activity-scroll");
   const newRun = lastRun !== state.run_id;
   const follow =
     newRun || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
   if (newRun) {
     entries.clear();
+    turns.clear();
     $("activity").replaceChildren();
     lastRun = state.run_id;
   }
-  game.setText(state.observation?.screen ?? "");
-  repl.setSubmissions(state.submissions);
+  game.setObservation(state.observation);
+  shell.setSubmissions(state.submissions);
   const items = activityEntries(state);
   const retained = new Set(items.map((item) => item.id));
   for (const [id, element] of entries)
@@ -45,11 +76,35 @@ function render(state: State) {
       element.remove();
       entries.delete(id);
     }
-  let previous: HTMLElement | null = null;
+  const retainedTurns = new Set(items.map((item) => item.turn));
+  for (const [turn, element] of turns)
+    if (!retainedTurns.has(turn)) {
+      element.remove();
+      turns.delete(turn);
+    }
+  let previousTurn: HTMLElement | null = null;
+  const previousEntries = new Map<number, HTMLElement>();
   for (const item of items) {
+    let group = turns.get(item.turn);
+    if (!group) {
+      group = document.createElement("section");
+      group.className = "activity-turn";
+      const title = document.createElement("h2");
+      title.className = "turn-title";
+      title.id = `turn-${item.turn}`;
+      title.textContent = `Turn ${item.turn + 1}`;
+      group.setAttribute("aria-labelledby", title.id);
+      group.append(title);
+      turns.set(item.turn, group);
+    }
+    if (previousTurn !== group) {
+      const next: ChildNode | null = previousTurn ? previousTurn.nextSibling : $("activity").firstChild;
+      if (next !== group) $("activity").insertBefore(group, next);
+      previousTurn = group;
+    }
     let element = entries.get(item.id);
     if (!element) {
-      element = document.createElement("div");
+      element = document.createElement(item.className === "result" ? "details" : "div");
       entries.set(item.id, element);
     }
     element.className = item.className;
@@ -62,10 +117,24 @@ function render(state: State) {
         const title = document.createElement("div");
         title.className = "tool-title";
         title.textContent =
-          item.label === "execute_python" ? "Execute Python" : item.label;
+          item.label === "execute_shell"
+            ? "Execute Shell"
+            : item.label === "execute_python"
+              ? "Execute Python"
+              : item.label;
         const code = document.createElement("pre");
         code.innerHTML = codeHtml(item.text, item.format);
         element.replaceChildren(title, code);
+      } else if (item.className === "result") {
+        if (!element.firstChild) {
+          const summary = document.createElement("summary");
+          summary.textContent = "Output";
+          const output = document.createElement("div");
+          output.className = "result-output";
+          element.append(summary, output);
+        }
+        // Retain disclosure state and keyboard focus while output streams.
+        text(element.lastElementChild as HTMLElement, item.text);
       } else if (item.format === "text") text(element, item.text);
       else
         element.innerHTML =
@@ -75,11 +144,12 @@ function render(state: State) {
       element.dataset.source = item.text;
       element.dataset.format = item.format;
     }
+    const previous = previousEntries.get(item.turn);
     const next: ChildNode | null = previous
       ? previous.nextSibling
-      : $("activity").firstChild;
-    if (next !== element) $("activity").insertBefore(element, next);
-    previous = element;
+      : group.firstChild!.nextSibling;
+    if (next !== element) group.insertBefore(element, next);
+    previousEntries.set(item.turn, element);
   }
   $("error").hidden = !state.error;
   text($("error"), state.error ?? "");
@@ -88,9 +158,30 @@ function render(state: State) {
 }
 
 async function command(path: string) {
+  if (path === "/run" && settingsDirty && !settingsForm.checkValidity()) {
+    selectShellView("settings");
+    settingsForm.reportValidity();
+    return;
+  }
   pending = true;
   controls();
   try {
+    if (path === "/run" && settingsDirty) {
+      const response = await fetch("/config", {
+        method: "POST",
+        headers: { "X-Dashboard-Request": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: modelInput.value.trim() || null,
+          reasoning_effort: reasoningInput.value,
+          max_turns: Number(turnsInput.value),
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      // Keep edits until the ordered event stream acknowledges the saved config.
+      savedSettings = await response.json();
+      if (current) syncSettings(current);
+      text($("settings-status"), "Applies when you press Start.");
+    }
     const response = await fetch(path, {
       method: "POST",
       headers: { "X-Dashboard-Request": "1" },
@@ -106,6 +197,49 @@ async function command(path: string) {
 }
 $("start").addEventListener("click", () => command("/run"));
 $("stop").addEventListener("click", () => command("/stop"));
+
+function selectShellView(view: "shell" | "settings") {
+  for (const name of ["shell", "settings"]) {
+    const selected = name === view;
+    button(`${name}-tab`).setAttribute("aria-selected", String(selected));
+    button(`${name}-tab`).tabIndex = selected ? 0 : -1;
+    $(`${name}-view`).setAttribute("aria-hidden", String(!selected));
+    $(`${name}-view`).inert = !selected;
+  }
+}
+for (const view of ["shell", "settings"] as const) {
+  button(`${view}-tab`).addEventListener("click", () => selectShellView(view));
+  button(`${view}-tab`).addEventListener("keydown", (event) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? "shell" : event.key === "End" ? "settings" : view === "shell" ? "settings" : "shell";
+      selectShellView(next);
+      button(`${next}-tab`).focus();
+    }
+  });
+}
+
+function selectView(view: "terminal" | "tiles") {
+  for (const name of ["terminal", "tiles"]) {
+    const selected = name === view;
+    button(`${name}-tab`).setAttribute("aria-selected", String(selected));
+    button(`${name}-tab`).tabIndex = selected ? 0 : -1;
+    $(name).setAttribute("aria-hidden", String(!selected));
+  }
+  const frame = $("tiles-frame") as HTMLIFrameElement;
+  if (view === "tiles" && !frame.getAttribute("src")) frame.src = "/tiles/";
+}
+for (const view of ["terminal", "tiles"] as const) {
+  button(`${view}-tab`).addEventListener("click", () => selectView(view));
+  button(`${view}-tab`).addEventListener("keydown", (event) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? "terminal" : event.key === "End" ? "tiles" : view === "terminal" ? "tiles" : "terminal";
+      selectView(next);
+      button(`${next}-tab`).focus();
+    }
+  });
+}
 
 function splitter(id: string, horizontal: boolean) {
   const handle = $(id),

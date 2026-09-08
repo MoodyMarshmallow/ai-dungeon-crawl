@@ -1,8 +1,8 @@
 import type { State, Submission } from "./types";
-import { pythonAnsi, terminalText } from "./rendering";
+import { shellAnsi, terminalText } from "./rendering";
 
-/** Render submitted scripts and their live output as a read-only Python transcript. */
-export function replTranscript(
+/** Render submitted shell commands and their live output as a read-only transcript. */
+export function shellTranscript(
   submissions: Submission[],
   highlighted = false,
 ): string {
@@ -10,12 +10,12 @@ export function replTranscript(
   for (const submission of submissions) {
     value +=
       (highlighted
-        ? pythonAnsi(submission.code)
+        ? shellAnsi(submission.code)
         : terminalText(submission.code)
       )
         .replace(/\r\n/g, "\n")
         .split("\n")
-        .map((line, index) => `${index ? "... " : ">>> "}${line}`)
+        .map((line, index) => `${index ? "> " : "$ "}${line}`)
         .join("\n") + "\n";
     value += highlighted
       ? `\x1b[38;2;147;187;216m${terminalText(submission.output)}\x1b[39m`
@@ -26,18 +26,19 @@ export function replTranscript(
     if (submission.status === "interrupted" && !submission.error)
       value += "[Interrupted]\n";
   }
-  if (submissions.at(-1)?.status !== "running") value += ">>> ";
+  if (submissions.at(-1)?.status !== "running") value += "$ ";
   return value;
 }
 
-/** Interleave model responses and execution returns without visible turn metadata. */
+/** Interleave model responses and execution returns within their agent turns. */
 export function activityEntries(state: Pick<State, "models" | "submissions">) {
   const result: {
     id: string;
+    turn: number;
     className: string;
     label: string;
     text: string;
-    format: "python" | "json" | "markdown" | "text";
+    format: "bash" | "python" | "json" | "markdown" | "text";
   }[] = [];
   const turns = new Set([
     ...state.models.map((model) => model.turn),
@@ -47,14 +48,14 @@ export function activityEntries(state: Pick<State, "models" | "submissions">) {
     for (const request of state.models.filter((model) => model.turn === turn)) {
       for (const [index, part] of Object.entries(request.parts)) {
         let content = part.text;
-        let format: "python" | "json" | "markdown" =
+        let format: "bash" | "python" | "json" | "markdown" =
           part.kind === "tool" ? "json" : "markdown";
         if (part.kind === "tool") {
           try {
             const args = JSON.parse(content);
             if (typeof args.code === "string") {
               content = args.code;
-              format = "python";
+              format = part.name === "execute_python" ? "python" : "bash";
             }
           } catch {
             /* Partial arguments remain visible while streaming. */
@@ -64,6 +65,7 @@ export function activityEntries(state: Pick<State, "models" | "submissions">) {
         if (content)
           result.push({
             id: `model:${request.id}:${index}`,
+            turn,
             className: `model-part ${part.kind}`,
             label:
               part.kind === "tool"
@@ -87,6 +89,7 @@ export function activityEntries(state: Pick<State, "models" | "submissions">) {
       if (content)
         result.push({
           id: `result:${submission.id}`,
+          turn,
           className: "result",
           label: "Execution result",
           text: content,

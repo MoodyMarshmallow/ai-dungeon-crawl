@@ -1,15 +1,35 @@
+export const reasoningEfforts = ["default", "none", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ReasoningEffort = (typeof reasoningEfforts)[number];
 export interface Config {
   backend: "codex" | "pydantic";
   model: string | null;
-  max_steps: number;
+  reasoning_effort: ReasoningEffort;
   max_turns: number;
-  game: string;
+  game: "dcss" | "mock";
+  crawl_path?: string;
+  manual_path?: string;
   reasoning_summary: boolean;
 }
 export interface Observation {
   id: number;
   screen: string;
   ended: boolean;
+  width?: number;
+  height?: number;
+  styles?: ScreenStyle[];
+  cursor?: [number, number] | null;
+}
+export interface ScreenStyle {
+  row: number;
+  col: number;
+  length: number;
+  fg: string;
+  bg: string;
+  bold: boolean;
+  italics: boolean;
+  underline: boolean;
+  reverse: boolean;
+  blink: boolean;
 }
 export interface ModelPart {
   kind: "text" | "reasoning" | "tool";
@@ -53,6 +73,7 @@ export interface State {
   stop_reason: string | null;
 }
 export type HarnessEvent =
+  | { event: "game.tiles"; data: { messages: Record<string, unknown>[] } }
   | { event: "game.observation"; data: Observation }
   | {
       event: "game.step";
@@ -79,12 +100,12 @@ export type HarnessEvent =
       };
     }
   | {
-      event: "repl.submitted";
+      event: "execution.submitted";
       data: { id: number; code: string; model_requests: number | null };
     }
-  | { event: "repl.output"; data: { text: string } }
+  | { event: "execution.output"; data: { text: string } }
   | {
-      event: "repl.finished";
+      event: "execution.finished";
       data: {
         id: number;
         output: string;

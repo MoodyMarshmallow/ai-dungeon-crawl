@@ -13,20 +13,58 @@
     <main class="workspace" id="workspace">
       <div class="left-workspace" id="left-workspace">
         <section class="game-pane" aria-label="Game screen">
-          <div id="terminal">
+          <div class="game-tabs" role="tablist" aria-label="Game view">
+            <button id="terminal-tab" role="tab" aria-selected="true" aria-controls="terminal">Terminal</button>
+            <button id="tiles-tab" role="tab" aria-selected="false" aria-controls="tiles" tabindex="-1">Tiles</button>
+          </div>
+          <div class="game-views">
+          <div id="terminal" role="tabpanel" aria-labelledby="terminal-tab">
             <div id="screen" aria-label="Current game screen"></div>
+          </div>
+          <div id="tiles" role="tabpanel" aria-labelledby="tiles-tab" aria-hidden="true">
+            <iframe id="tiles-frame" title="Current game tiles, read only" sandbox="allow-scripts allow-same-origin" tabindex="-1"></iframe>
+          </div>
           </div>
         </section>
         <div
           class="resize-handle horizontal"
           id="row-handle"
           role="separator"
-          aria-label="Resize game and REPL panes"
+          aria-label="Resize game and shell panes"
           aria-orientation="horizontal"
           tabindex="0"
         ></div>
-        <section class="repl-pane" aria-label="Python REPL transcript">
-          <div id="repl-terminal"></div>
+        <section class="shell-pane" aria-label="Shell and settings">
+          <div class="game-tabs" role="tablist" aria-label="Shell and settings">
+            <button id="shell-tab" role="tab" aria-selected="true" aria-controls="shell-view">Shell</button>
+            <button id="settings-tab" role="tab" aria-selected="false" aria-controls="settings-view" tabindex="-1">Settings</button>
+          </div>
+          <div class="game-views shell-views">
+            <div id="shell-view" role="tabpanel" aria-labelledby="shell-tab">
+              <div id="shell-terminal"></div>
+            </div>
+            <div id="settings-view" role="tabpanel" aria-labelledby="settings-tab" aria-hidden="true" inert>
+              <form id="settings-form">
+                <fieldset id="settings-fields" disabled>
+                  <label for="setting-model">Model</label>
+                  <input id="setting-model" name="model" type="text" autocomplete="off" spellcheck="false" placeholder="Provider default" />
+                  <label for="setting-reasoning">Reasoning strength</label>
+                  <select id="setting-reasoning" name="reasoning_effort">
+                    <option value="default">Default</option>
+                    <option value="none">None</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="xhigh">Extra high</option>
+                  </select>
+                  <label for="setting-turns">Turn limit</label>
+                  <input id="setting-turns" name="max_turns" type="number" min="0" max="9007199254740991" step="1" required />
+                </fieldset>
+                <p id="settings-status" role="status">Applies when you press Start.</p>
+              </form>
+            </div>
+          </div>
         </section>
       </div>
       <div

@@ -94,8 +94,8 @@ export function applyEvent(state: State, message: HarnessEvent): void {
       state.output_tokens += message.data.output_tokens;
       state.phase = "Validating output tool";
       break;
-    case "repl.submitted":
-      state.phase = "Executing Python";
+    case "execution.submitted":
+      state.phase = "Executing shell";
       state.submissions.push({
         ...message.data,
         output: "",
@@ -107,14 +107,14 @@ export function applyEvent(state: State, message: HarnessEvent): void {
       state.submissions = state.submissions.slice(-30);
       if (model) model.status = "accepted";
       break;
-    case "repl.output":
+    case "execution.output":
       if (submission)
         submission.output = (submission.output + message.data.text).slice(
           0,
           65536,
         );
       break;
-    case "repl.finished":
+    case "execution.finished":
       if (submission) {
         const { output, error, status, output_truncated } = message.data;
         Object.assign(submission, { output, error, status, output_truncated });

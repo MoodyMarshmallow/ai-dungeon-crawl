@@ -3,19 +3,49 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Subprocess } from "bun";
 import type { Config, HarnessEvent } from "./types";
+import { reasoningEfforts } from "./types";
 import { applyEvent, emptyState } from "./state";
+import { TileJournal, tileAssets, tileEvents, tilePage, tileScript, tileStyle } from "./tiles";
 
 const root = resolve(import.meta.dir, "..");
 
 export class Dashboard {
+  readonly tiles = new TileJournal();
   state;
   revision = 0;
   child: Subprocess<"ignore", "pipe", "ignore"> | null = null;
   completion: Promise<void> = Promise.resolve();
   private stopping = false;
 
-  constructor(readonly config: Config) {
+  constructor(public config: Config) {
     this.state = emptyState(config);
+  }
+
+  get active(): boolean {
+    return this.child !== null || this.state.status === "running";
+  }
+
+  updateConfig(value: unknown): void {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Settings must be a JSON object");
+    const fields = value as Record<string, unknown>;
+    if (Object.keys(fields).some(key => !["model", "reasoning_effort", "max_turns"].includes(key)))
+      throw new Error("Unknown setting");
+    const { model, reasoning_effort, max_turns } = fields;
+    if (model !== null && (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f\x7f]/.test(model)))
+      throw new Error("Enter a model name (at most 200 characters)");
+    if (!reasoningEfforts.includes(reasoning_effort as Config["reasoning_effort"]))
+      throw new Error("Choose a supported reasoning strength");
+    if (typeof max_turns !== "number" || !Number.isSafeInteger(max_turns) || max_turns < 0)
+      throw new Error("Turn limit must be a nonnegative whole number");
+    const selectedModel = model === null ? (this.config.backend === "codex" ? "gpt-5.6-luna" : null) : (model as string).trim();
+    if (!selectedModel) throw new Error("This provider requires a model name");
+    if (this.config.backend === "pydantic" && reasoning_effort !== "default" && !/^openai(?:-responses|-chat)?:/.test(selectedModel))
+      throw new Error("Reasoning strength requires a Codex or OpenAI model; choose Provider default for other providers");
+    if (this.active) throw new Error("An episode is already running");
+    this.config = { ...this.config, model: selectedModel, reasoning_effort: reasoning_effort as Config["reasoning_effort"], max_turns };
+    this.state.config = this.config;
+    this.revision++;
   }
 
   /** Start one fresh Python episode. Browser input never becomes a shell command. */
@@ -23,6 +53,7 @@ export class Dashboard {
     if (this.child) return false;
     this.stopping = false;
     this.state = emptyState(this.config, this.state.run_id + 1);
+    this.tiles.reset(this.state.run_id);
     Object.assign(this.state, {
       status: "running",
       phase: "Starting game",
@@ -43,13 +74,17 @@ export class Dashboard {
       "-u",
       "-m",
       "ai_dungeon_crawl.dashboard_bridge",
+      "--game",
+      this.config.game,
       "--policy",
       this.config.backend,
-      "--max-steps",
-      String(this.config.max_steps),
+      "--reasoning-effort",
+      this.config.reasoning_effort,
       "--max-turns",
       String(this.config.max_turns),
     ];
+    if (this.config.crawl_path) args.push("--crawl-path", this.config.crawl_path);
+    if (this.config.manual_path) args.push("--manual-path", this.config.manual_path);
     if (this.config.model) args.push("--model", this.config.model);
     if (this.config.reasoning_summary) args.push("--reasoning-summary");
     try {
@@ -70,6 +105,10 @@ export class Dashboard {
   }
 
   accept(message: HarnessEvent) {
+    if (message.event === "game.tiles") {
+      this.tiles.append(message.data.messages);
+      return;
+    }
     applyEvent(this.state, message);
     this.revision++;
   }
@@ -129,7 +168,9 @@ export async function startServer(dashboard: Dashboard, port = 8765) {
   });
   if (!build.success) throw new Error("Dashboard TypeScript build failed");
   const script = await build.outputs[0].text();
+  const assets = tileAssets(dashboard.config.crawl_path ?? resolve(root, "../crawl/crawl-ref/source/crawl-web-harness"));
   let viewers = 0;
+  let tileViewers = 0;
   const headers = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -161,6 +202,17 @@ export async function startServer(dashboard: Dashboard, port = 8765) {
       if (request.method === "POST") {
         if (request.headers.get("X-Dashboard-Request") !== "1")
           return reply("Use dashboard controls", 403);
+        if (url.pathname === "/config") {
+          if (dashboard.active)
+            return reply("An episode is already running", 409);
+          try {
+            dashboard.updateConfig(await request.json());
+            return reply(JSON.stringify(dashboard.config), 200, "application/json");
+          } catch (error) {
+            return reply(error instanceof Error ? error.message : "Invalid settings",
+              dashboard.active ? 409 : 400);
+          }
+        }
         if (url.pathname === "/run")
           return dashboard.start()
             ? reply("Started", 202)
@@ -171,6 +223,21 @@ export async function startServer(dashboard: Dashboard, port = 8765) {
         }
       }
       if (request.method !== "GET") return reply("Not found", 404);
+      if (url.pathname === "/tiles/") {
+        return new Response(tilePage(assets.markup, assets.ready), {
+          headers: { ...headers, "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'" },
+        });
+      }
+      if (url.pathname === "/tiles/viewer.js") return reply(tileScript, 200, "text/javascript");
+      if (url.pathname === "/tiles/viewer.css") return reply(tileStyle, 200, "text/css");
+      if (url.pathname === "/tiles/events") {
+        if (tileViewers >= 8) return reply("Too many viewers", 503);
+        server.timeout(request, 0);
+        tileViewers++;
+        return reply(tileEvents(dashboard.tiles, request, () => tileViewers--), 200, "text/event-stream");
+      }
+      const asset = assets.files.get(url.pathname);
+      if (asset) return reply(Bun.file(asset), 200, Bun.file(asset).type);
       // xterm generates scoped CSS at runtime. Inline scripts
       // remain forbidden; all fonts and library assets are served locally.
       const fonts: Record<string, string> = {
@@ -280,24 +347,27 @@ export function dashboardOptions(args: string[]) {
       policy: { type: "string", default: "codex" },
       model: { type: "string" },
       port: { type: "string", default: "8765" },
-      "max-steps": { type: "string", default: "10" },
+      "reasoning-effort": { type: "string", default: "default" },
       "max-turns": { type: "string", default: "3" },
       "reasoning-summary": { type: "boolean" },
+      game: { type: "string", default: "dcss" },
+      "crawl-path": { type: "string" },
+      "manual-path": { type: "string" },
     },
   });
   const backend = values.policy as Config["backend"];
   const model = values.model ?? (backend === "codex" ? "gpt-5.6-luna" : null);
   const port = Number(values.port),
-    max_steps = Number(values["max-steps"]),
     max_turns = Number(values["max-turns"]);
+  const reasoning_effort = values["reasoning-effort"] as Config["reasoning_effort"];
   if (
     !["codex", "pydantic"].includes(backend) ||
+    !["dcss", "mock"].includes(values.game!) ||
     !Number.isInteger(port) ||
     port < 1 ||
     port > 65535 ||
-    !Number.isInteger(max_steps) ||
-    max_steps < 0 ||
-    !Number.isInteger(max_turns) ||
+    !reasoningEfforts.includes(reasoning_effort) ||
+    !Number.isSafeInteger(max_turns) ||
     max_turns < 0 ||
     !model
   ) {
@@ -308,9 +378,11 @@ export function dashboardOptions(args: string[]) {
   const config: Config = {
     backend,
     model,
-    max_steps,
+    reasoning_effort,
     max_turns,
-    game: "Corridor mock",
+    game: values.game as Config["game"],
+    crawl_path: values["crawl-path"] ? resolve(values["crawl-path"]) : undefined,
+    manual_path: values["manual-path"] ? resolve(values["manual-path"]) : undefined,
     reasoning_summary: values["reasoning-summary"] ?? backend === "codex",
   };
   return { config, port };

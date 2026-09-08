@@ -14,7 +14,7 @@ export function terminalText(value: string): string {
     .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 }
 
-export function codeHtml(source: string, language = "python"): string {
+export function codeHtml(source: string, language = "bash"): string {
   const aliases: Record<string, string> = {
     py: "python",
     js: "javascript",
@@ -77,4 +77,19 @@ export function pythonAnsi(source: string): string {
     return paint(value.content, colors[value.type] ?? inherited);
   }
   return paint(Prism.tokenize(terminalText(source), Prism.languages.python!));
+}
+
+/** Highlight shell commands for the terminal transcript. */
+export function shellAnsi(source: string): string {
+  function paint(
+    value: string | Prism.Token | (string | Prism.Token)[],
+    inherited = "",
+  ): string {
+    if (typeof value === "string")
+      return inherited ? `\x1b[38;2;${inherited}m${value}\x1b[39m` : value;
+    if (Array.isArray(value))
+      return value.map((item) => paint(item, inherited)).join("");
+    return paint(value.content, colors[value.type] ?? inherited);
+  }
+  return paint(Prism.tokenize(terminalText(source), Prism.languages.bash!));
 }

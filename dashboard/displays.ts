@@ -1,8 +1,10 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { terminalText } from "./rendering";
-import { replTranscript } from "./transcript";
-import type { Submission } from "./types";
+import { shellTranscript } from "./transcript";
+import type { Observation, Submission } from "./types";
+import { screenAnsi } from "./screen";
+import { lineCells, terminalUnicode } from "./unicode";
 export { terminalText } from "./rendering";
 
 export class TerminalDisplay {
@@ -11,12 +13,14 @@ export class TerminalDisplay {
   private resize: ResizeObserver;
   private value = "";
   private frame = 0;
+  private observation: Observation | null = null;
 
   constructor(
     private host: HTMLElement,
     private game = false,
   ) {
     this.terminal = new Terminal({
+      allowProposedApi: true,
       disableStdin: true,
       cursorBlink: false,
       convertEol: true,
@@ -26,12 +30,15 @@ export class TerminalDisplay {
       lineHeight: 1.35,
       screenReaderMode: true,
       theme: {
-        background: game ? "#121212" : "#181818",
+        background: game ? "#000000" : "#181818",
+        ...(game ? { black: "#000000" } : {}),
         foreground: "#dedbd4",
-        cursor: game ? "#121212" : "#181818",
+        cursor: game ? "#dedbd4" : "#181818",
         selectionBackground: "#465568",
       },
     });
+    this.terminal.unicode.register(terminalUnicode);
+    this.terminal.unicode.activeVersion = terminalUnicode.version;
     this.terminal.loadAddon(this.fit);
     this.terminal.open(host);
     this.terminal.attachCustomKeyEventHandler(() => false);
@@ -44,8 +51,16 @@ export class TerminalDisplay {
     this.update(terminalText(value));
   }
 
+  setObservation(observation: Observation | null) {
+    const previous = this.observation;
+    this.observation = observation;
+    this.update(observation ? screenAnsi(observation) : "");
+    if (previous?.width !== observation?.width || previous?.height !== observation?.height ||
+        previous?.cursor?.[0] !== observation?.cursor?.[0] || previous?.cursor?.[1] !== observation?.cursor?.[1]) this.schedule();
+  }
+
   setSubmissions(submissions: Submission[]) {
-    this.update(replTranscript(submissions, true));
+    this.update(shellTranscript(submissions, true));
   }
 
   private update(value: string) {
@@ -66,9 +81,9 @@ export class TerminalDisplay {
     const follow = buffer.viewportY >= buffer.baseY;
     const viewport = buffer.viewportY;
     if (this.game) {
-      const lines = content.split("\n");
-      const cols = Math.max(2, ...lines.map((line) => [...line].length));
-      const rows = Math.max(1, lines.length);
+      const lines = (this.observation?.screen ?? content).split("\n");
+      const cols = this.observation?.width || Math.max(2, ...lines.map((line) => lineCells(line).reduce((total, cell) => total + cell.width, 0)));
+      const rows = this.observation?.height || Math.max(1, lines.length);
       const parent = this.host.parentElement!;
       const size = Math.min(
         44,
@@ -89,11 +104,18 @@ export class TerminalDisplay {
     } else this.fit.fit();
     // Full snapshots prevent duplicate output after reconnecting; preserve manual scrollback.
     this.terminal.write(
-      "\x1b[?25l\x1b[3J\x1b[2J\x1b[H" + content.replace(/\n/g, "\r\n"),
+      "\x1b[?25l\x1b[0m\x1b[3J\x1b[2J\x1b[H" + content.replace(/\n/g, "\r\n") + this.cursorControl(),
       () => {
         if (!this.game && !follow) this.terminal.scrollToLine(viewport);
       },
     );
+  }
+
+  private cursorControl() {
+    const cursor = this.observation?.cursor;
+    return this.game && cursor && cursor.every(Number.isInteger)
+      ? `\x1b[${cursor[0] + 1};${cursor[1] + 1}H\x1b[?25h`
+      : "\x1b[?25l";
   }
 
   dispose() {

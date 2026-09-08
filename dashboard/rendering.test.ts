@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { codeHtml, markdownHtml, pythonAnsi } from "./rendering";
-import { replTranscript } from "./transcript";
+import { shellTranscript } from "./transcript";
 import { dashboardOptions } from "./server";
 
 test("dashboard defaults to Codex and rejects the scripted launch option", () => {
@@ -34,12 +34,12 @@ test("Markdown formats reasoning and fenced Python without executing HTML", () =
 });
 
 test("partial code highlights safely and terminal ANSI is renderer-owned", () => {
-  expect(codeHtml('await press("')).toContain('class="token keyword"');
+  expect(codeHtml('await press("', "python")).toContain('class="token keyword"');
   const source = 'await press("l")\n# comment';
   const colored = pythonAnsi(source);
   expect(colored).toContain("\x1b[38;2;");
   expect(colored.replace(/\x1b\[[0-9;]*m/g, "")).toBe(source);
-  const transcript = replTranscript(
+  const transcript = shellTranscript(
     [
       {
         id: 0,
