@@ -1,9 +1,7 @@
-"""Select a model backend and exercise it against the mock game."""
-
 import argparse
 import asyncio
 
-from .demo import MockGameSession
+from .mock_game import MockGameSession
 from .episode import EpisodeRunner
 from .policies import create_policy
 
@@ -32,15 +30,15 @@ async def run(backend: str, model: str | None, max_steps: int, max_turns: int):
 
 def main():
     parser = argparse.ArgumentParser(description="Run an AI Dungeon Crawl mock-game episode.")
-    parser.add_argument("--policy", choices=("scripted", "codex", "pydantic"), default="scripted")
+    parser.add_argument("--policy", choices=("codex", "pydantic"), default="codex")
     parser.add_argument("--model", help="Codex model name, or PydanticAI provider:model")
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument("--max-turns", type=int, default=3)
     args = parser.parse_args()
     if args.max_steps < 0 or args.max_turns < 0:
         parser.error("Limits must be nonnegative")
-    if args.policy == "pydantic" and not args.model:
-        parser.error("--policy pydantic requires --model provider:model")
-    if args.policy == "scripted" and args.model:
-        parser.error("--model does not apply to the scripted policy")
+    if args.policy == "codex" and not args.model:
+        args.model = "gpt-5.6-luna"
+    if not args.model:
+        parser.error("Model-backed policies require --model (provider:model for pydantic)")
     asyncio.run(run(args.policy, args.model, args.max_steps, args.max_turns))

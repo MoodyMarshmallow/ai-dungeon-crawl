@@ -1,5 +1,3 @@
-"""Persistent Python execution, with all game effects mediated by the parent."""
-
 import asyncio
 from dataclasses import asdict
 import json
@@ -11,6 +9,7 @@ import tempfile
 from typing import Awaitable, Callable
 
 from .contracts import GameAction, ExecutionResult, GameObservation, validate_python_source
+from .events import emit
 
 
 class StopExecution(Exception):
@@ -155,6 +154,8 @@ class PythonRepl:
                         raise RuntimeError("Invalid REPL output")
                     space = self.max_output_chars - len(output)
                     output += text[:space]
+                    if text[:space]:
+                        emit("repl.output", text=text[:space])
                     truncated |= len(text) > space
                 elif kind == "truncated":
                     truncated = True

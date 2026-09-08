@@ -1,11 +1,11 @@
-"""Own the agent-turn loop and mediate every game input from the REPL."""
-
 import logging
+from dataclasses import asdict
 import sys
 from typing import Optional
 
 from .contracts import GameEpisodeResult, GameSession, Policy, GameStep, AgentTurnRecord
 from .repl import PythonRepl, StopExecution
+from .events import emit
 
 
 class EpisodeRunner:
@@ -22,6 +22,7 @@ class EpisodeRunner:
         steps, turns = [], []
         try:
             observation = await self._game.start()
+            emit("game.observation", **asdict(observation))
 
             async def press(action):
                 nonlocal observation
@@ -34,13 +35,17 @@ class EpisodeRunner:
                     raise ValueError("GameObservation IDs must increase after each action")
                 steps.append(GameStep(observation, action, following))
                 observation = following
+                emit("game.step", key=action.key, count=len(steps), observation=asdict(observation))
                 return observation
 
             while not observation.ended and len(steps) < max_steps and len(turns) < max_turns:
+                emit("turn.started", id=len(turns))
                 turn = await self._policy.request_turn(observation, tuple(turns))
+                emit("repl.submitted", id=len(turns), code=turn.code, model_requests=turn.model_requests)
                 first_step = len(steps)
                 execution = await self._repl.execute_python(turn.code, observation, press)
                 turns.append(AgentTurnRecord(len(turns), turn, execution, tuple(steps[first_step:])))
+                emit("repl.finished", id=len(turns) - 1, **asdict(execution))
                 if execution.status == "timeout":
                     break
 

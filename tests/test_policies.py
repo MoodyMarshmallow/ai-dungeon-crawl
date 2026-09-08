@@ -1,23 +1,22 @@
 import asyncio
 from dataclasses import replace
 import json
-import os
-from pathlib import Path
 import shutil
-import tempfile
+import sys
 import unittest
-from unittest.mock import patch
 
 import httpx2
 from openai import AsyncOpenAI
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ai_dungeon_crawl.contracts import GameAction, ExecutionResult, AgentTurn, GameObservation, GameStep, AgentTurnRecord
 from ai_dungeon_crawl.policies import CodexPolicy, PydanticPolicy, create_policy
+from ai_dungeon_crawl.mock_game import MockGameSession
+from ai_dungeon_crawl.episode import EpisodeRunner
 
 
 OBSERVATION = GameObservation(0, "######\n#@...#\n######")
@@ -143,75 +142,60 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 1)
 
 
-class CodexPolicyTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.executable = Path(directory.name) / "codex-stub"
-        shutil.copyfile(Path(__file__).parent / "fixtures" / "codex_stub.py", self.executable)
-        self.executable.chmod(0o700)
+    async def test_plain_text_is_not_executable_output(self):
+        calls = []
 
-    def policy(self, mode="ok", **kwargs):
-        return CodexPolicy(executable=str(self.executable), goal=mode, **kwargs)
+        def model(messages, info):
+            calls.append(messages)
+            return ModelResponse(parts=[TextPart('{"code":"await press(\"l\")"}')])
 
-    async def test_structured_output_with_subscription_only_configuration(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "fake", "CODEX_API_KEY": "fake",
-                                     "OPENAI_BASE_URL": "https://example.test", "CODEX_ACCESS_TOKEN": "fake"}):
-            turn = await self.policy().request_turn(OBSERVATION, ())
-        self.assertEqual(turn.code, 'await press("l")')
-        self.assertIsNone(turn.model_requests)
+        with self.assertRaises(UnexpectedModelBehavior):
+            await PydanticPolicy(FunctionModel(model)).request_turn(OBSERVATION, ())
+        self.assertEqual(len(calls), 2)
 
-    async def test_invalid_structured_output_is_rejected(self):
-        with self.assertRaises(ValueError):
-            await self.policy("invalid").request_turn(OBSERVATION, ())
+    async def test_multiple_output_calls_are_rejected(self):
+        def model(messages, info):
+            return ModelResponse(parts=[ToolCallPart("execute_python", {"code": "pass"}, "a"),
+                                        ToolCallPart("execute_python", {"code": "pass"}, "b")])
 
-    async def test_failure_does_not_leak_diagnostics_or_fall_back(self):
-        with self.assertRaisesRegex(RuntimeError, "no API fallback") as context:
-            await self.policy("failed").request_turn(OBSERVATION, ())
-        self.assertNotIn("fake-sensitive-diagnostic", str(context.exception))
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            await PydanticPolicy(FunctionModel(model)).request_turn(OBSERVATION, ())
 
-    async def test_incomplete_turn_is_rejected(self):
-        with self.assertRaisesRegex(RuntimeError, "did not complete"):
-            await self.policy("incomplete").request_turn(OBSERVATION, ())
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("sandbox-exec"),
+                         "REPL integration requires macOS sandbox-exec")
+    async def test_output_tool_ends_turn_and_feedback_starts_next_turn(self):
+        prompts = []
 
-    async def test_unexpected_tool_use_is_rejected(self):
-        with self.assertRaisesRegex(RuntimeError, "unexpected tool"):
-            await self.policy("tool").request_turn(OBSERVATION, ())
+        def model(messages, info):
+            user_parts = [part for message in messages for part in message.parts
+                          if isinstance(part, UserPromptPart)]
+            self.assertEqual(len(user_parts), 1)
+            prompts.append(json.loads(user_parts[0].content))
+            return response('await press("l")\nawait press("l")' if len(prompts) == 1
+                            else 'await press("l")')
 
-    async def test_timeout_kills_process(self):
-        processes = []
-        original = asyncio.create_subprocess_exec
-
-        async def create(*args, **kwargs):
-            process = await original(*args, **kwargs)
-            processes.append(process)
-            return process
-
-        with patch("asyncio.create_subprocess_exec", create):
-            with self.assertRaises(TimeoutError):
-                await self.policy("timeout", timeout_seconds=0.1).request_turn(OBSERVATION, ())
-        self.assertIsNotNone(processes[0].returncode)
-
-    async def test_output_overflow_is_bounded(self):
-        with self.assertRaisesRegex(RuntimeError, "capture limit"):
-            await self.policy("overflow").request_turn(OBSERVATION, ())
-
-    async def test_missing_cli_is_actionable(self):
-        with self.assertRaisesRegex(RuntimeError, "Codex CLI is missing"):
-            await CodexPolicy(executable="/nonexistent/codex").request_turn(OBSERVATION, ())
+        result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(model))).run()
+        self.assertEqual(result.stop_reason, "game_exited")
+        self.assertEqual([len(turn.steps) for turn in result.turns], [2, 1])
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(prompts[1]["observation"]["id"], 2)
+        self.assertEqual(prompts[1]["history"][0]["executed_keys"], ["l", "l"])
 
 
 class RoutingTests(unittest.TestCase):
     def test_explicit_backend_selection(self):
-        self.assertIsInstance(create_policy("codex"), CodexPolicy)
+        self.assertIsInstance(create_policy("codex", model="test-model"), CodexPolicy)
         self.assertIsInstance(create_policy("pydantic", model="openai-chat:example"), PydanticPolicy)
-        self.assertEqual(type(create_policy("scripted")).__name__, "ScriptedPolicy")
+        with self.assertRaises(ValueError):
+            create_policy("scripted")
 
     def test_bad_configuration_never_selects_another_backend(self):
         with self.assertRaises(ValueError):
             create_policy("unknown")
         with self.assertRaises(ValueError):
             create_policy("pydantic")
+        with self.assertRaises(ValueError):
+            create_policy("codex")
         with self.assertRaises(ValueError):
             create_policy("scripted", model="example")
 

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from ai_dungeon_crawl.contracts import GameAction, AgentTurn, GameObservation
-from ai_dungeon_crawl.demo import MockGameSession, ScriptedPolicy
+from ai_dungeon_crawl.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
 from ai_dungeon_crawl.repl import PythonRepl
 
@@ -27,7 +27,10 @@ class CodePolicy:
 class EpisodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_records_each_transition_and_closes_on_exit(self):
         game = MockGameSession()
-        result = await EpisodeRunner(game, ScriptedPolicy()).run()
+        result = await EpisodeRunner(game, CodePolicy(
+            'moves = 2\nawait press("l")\nawait press("l")',
+            'await press("l")\nmoves += 1\nprint("Total moves:", moves)',
+        )).run()
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual(len(result.steps), 3)
         self.assertTrue(result.final_observation.ended)
@@ -37,14 +40,14 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.turns[1].steps, result.steps[2:])
         self.assertEqual([len(turn.steps) for turn in result.turns], [2, 1])
         self.assertEqual(result.turns[1].execution.output, "Total moves: 3\n")
-        self.assertEqual(result.turns[1].turn.model_requests, 0)
+        self.assertEqual(result.turns[1].turn.model_requests, 2)
         for earlier, later in zip(result.steps, result.steps[1:]):
             self.assertEqual(earlier.after, later.before)
         self.assertTrue(game.closed)
 
     async def test_zero_budget_observes_without_applying_action(self):
         game = MockGameSession()
-        result = await EpisodeRunner(game, ScriptedPolicy()).run(max_steps=0)
+        result = await EpisodeRunner(game, CodePolicy('await press("l")')).run(max_steps=0)
         self.assertEqual(result.stop_reason, "step_limit")
         self.assertEqual(result.steps, ())
         self.assertEqual(game.position, 0)
@@ -69,7 +72,7 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
 
         game = TimeoutGame()
         with self.assertRaises(asyncio.TimeoutError):
-            await EpisodeRunner(game, ScriptedPolicy()).run()
+            await EpisodeRunner(game, CodePolicy('await press("l")')).run()
         self.assertEqual(game.position, 1)
         self.assertTrue(game.closed)
 

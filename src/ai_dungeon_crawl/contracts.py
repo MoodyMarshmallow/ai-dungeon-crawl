@@ -1,5 +1,3 @@
-"""Data and internal interfaces shared by the game and agent loop."""
-
 from dataclasses import dataclass
 from typing import Literal, Optional, Protocol, Tuple
 
@@ -75,7 +73,7 @@ class AgentTurn:
     next agent turn. This value is not a transcript of individual model turns.
 
     model_requests counts logical model invocations including output repair (not hidden
-    transport retries). Zero denotes a scripted policy; None means the backend
+    transport retries). Zero means no model requests; None means the backend
     does not expose a reliable count. One tool submission per agent turn.
     """
 

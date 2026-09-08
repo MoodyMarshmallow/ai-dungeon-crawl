@@ -1,5 +1,3 @@
-"""Private JSON-line worker. Only launch through PythonRepl's OS sandbox."""
-
 import ast
 import asyncio
 from collections import namedtuple

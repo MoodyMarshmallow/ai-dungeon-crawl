@@ -1,5 +1,3 @@
-"""Source validation is independent of model metadata and Python execution."""
-
 import unittest
 from unittest.mock import AsyncMock, patch
 
