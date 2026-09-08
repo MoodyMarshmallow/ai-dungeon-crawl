@@ -20,7 +20,8 @@ bun run dev
 
 - Open [localhost:8765](http://127.0.0.1:8765/) and click **Start**. **Stop** cancels the episode.
 - **Settings** lets you choose the model, reasoning strength, and turn limit for the next **Start**. Reasoning strength is sent to Codex/OpenAI; other PydanticAI providers require **Provider default**. Model support for individual strengths varies. Terminal launches accept `--model`, `--reasoning-effort`, and `--max-turns` too.
-- A turn is one model-submitted shell script. There is no keypress limit; game exit, the turn limit, **Stop**, and execution timeouts still end a run.
+- A turn is one model-submitted shell script. There is no keypress limit; shell errors and timeouts return feedback so the model can continue. Game exit, the turn limit, and **Stop** end a run.
+- Each new run writes `runs/<run-id>/events.jsonl`: timestamped configuration, observations, exposed reasoning summaries, tool calls, full shell output, and completion/errors. Dashboard/model previews remain bounded; the log does not contain credentials or encrypted reasoning. Older runs cannot be recovered retroactively.
 - Switch between **Terminal** and **Tiles** to view the same game. Saves stay in `runs/`.
 - The agent uses `crawl observe`, `crawl observe --json`, and `crawl press KEY`. It can search the matching local `crawl_manual.rst` with `rg`, `grep`, or `sed`.
 - Keypresses produce no output on success; use `crawl observe` for intermediate inspection. The model automatically receives the final screen after each submission. Documentation lookups use the local manual, not in-game help.

@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 from .contracts import ExecutionResult, GameAction, validate_source, StopExecution
-from .events import emit
+from .events import emit_output
 from .observation_json import observation_data, format_observation
 
 
@@ -177,7 +177,7 @@ class ShellTerminal:
                 writer.close()
                 self._clients.discard(task)
 
-        async def collect(stream):
+        async def collect(stream, name):
             nonlocal output, truncated
             decoder = codecs.getincrementaldecoder('utf-8')('replace')
             while True:
@@ -186,8 +186,7 @@ class ShellTerminal:
                 space = self.max_output_chars - len(output)
                 output += text[:space]
                 truncated |= len(text) > space
-                if text[:space]:
-                    emit('execution.output', text=text[:space])
+                emit_output(text, text[:space], name)
                 if not chunk:
                     break
 
@@ -206,8 +205,9 @@ class ShellTerminal:
                 cwd=self.workspace, env=environment, start_new_session=True,
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE)
-            readers = [asyncio.create_task(collect(stream))
-                       for stream in (self._process.stdout, self._process.stderr)]
+            readers = [asyncio.create_task(collect(stream, name))
+                       for stream, name in ((self._process.stdout, 'stdout'),
+                                            (self._process.stderr, 'stderr'))]
             deadline = loop.time() + self.timeout_seconds
             while self._process.returncode is None or in_action:
                 if fatal.done():
@@ -231,7 +231,9 @@ class ShellTerminal:
             if readers:
                 await asyncio.gather(*readers)
             self._busy = False
-            if status in ('timeout', 'stopped') or self._closed:
+            # A timeout kills this submission, not the persistent workspace.
+            # The next turn receives its partial output and latest observation.
+            if status == 'stopped' or self._closed:
                 await self.close()
         return ExecutionResult(observation, output, error, status, truncated)
 

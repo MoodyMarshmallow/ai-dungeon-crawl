@@ -142,17 +142,35 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.turns[0].execution.output, "x" * 12)
         self.assertTrue(result.turns[0].execution.output_truncated)
 
-    async def test_timeout_retains_partial_progress_and_closes_worker(self):
-        game, terminal = MockGameSession(), ShellTerminal(timeout_seconds=0.2)
-        code = 'crawl press l >/dev/null\nprintf "before timeout\\n"\nwhile true; do :; done'
-        result = await EpisodeRunner(game, CodePolicy(code), terminal).run()
-        self.assertEqual(result.stop_reason, "execution_timeout")
+    async def test_timeout_returns_feedback_and_preserves_workspace_for_next_turn(self):
+        game, terminal = MockGameSession(), ShellTerminal(timeout_seconds=1)
+        code = 'echo saved > saved\ncrawl press l\nprintf "before timeout\\n"\nwhile true; do :; done'
+        policy = CodePolicy(code, 'cat saved\ncrawl press l\ncrawl press l')
+        result = await EpisodeRunner(game, policy, terminal).run(max_turns=2)
+        self.assertEqual(result.stop_reason, "game_exited")
+        self.assertEqual(policy.histories[1][0].execution.status, "timeout")
+        self.assertEqual(policy.histories[1][0].execution.observation.id, 1)
         self.assertEqual(result.turns[0].execution.output, "before timeout\n")
-        self.assertEqual(len(result.steps), 1)
-        self.assertEqual(result.final_observation.id, 1)
+        self.assertEqual(result.turns[1].execution.output, "saved\n")
+        self.assertEqual(result.turns[1].execution.status, "ok")
+        self.assertEqual(len(result.steps), 3)
         self.assertTrue(game.closed)
         with self.assertRaisesRegex(RuntimeError, "closed"):
             await terminal.execute_shell(":", result.final_observation, game.step)
+
+    async def test_repeated_timeouts_still_respect_turn_limit(self):
+        result = await EpisodeRunner(MockGameSession(), CodePolicy('while true; do :; done'),
+                                     ShellTerminal(timeout_seconds=.2)).run(max_turns=2)
+        self.assertEqual(result.stop_reason, "turn_limit")
+        self.assertEqual([turn.execution.status for turn in result.turns], ["timeout", "timeout"])
+
+    async def test_shell_errors_allow_next_turn(self):
+        for code in ('if true; then', 'missing_command_for_test', 'crawl press ll', 'cat /etc/passwd'):
+            with self.subTest(code=code):
+                policy = CodePolicy(code, 'crawl press l; crawl press l; crawl press l')
+                result = await EpisodeRunner(MockGameSession(), policy).run(max_turns=2)
+                self.assertEqual(policy.histories[1][0].execution.status, "error")
+                self.assertEqual(result.stop_reason, "game_exited")
 
     async def test_invalid_key_becomes_feedback_without_game_input(self):
         result = await EpisodeRunner(MockGameSession(), CodePolicy('crawl press ll')).run(max_turns=1)

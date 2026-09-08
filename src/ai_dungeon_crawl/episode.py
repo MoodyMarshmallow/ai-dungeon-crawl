@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import asdict
 import sys
@@ -45,16 +46,17 @@ class EpisodeRunner:
                 turn = await self._policy.request_turn(observation, tuple(turns))
                 emit("execution.submitted", id=len(turns), code=turn.code, model_requests=turn.model_requests)
                 first_step = len(steps)
-                execution = await self._terminal.execute_shell(turn.code, observation, press)
+                try:
+                    execution = await self._terminal.execute_shell(turn.code, observation, press)
+                except BaseException as exc:
+                    emit("execution.interrupted", id=len(turns),
+                         error="cancelled" if isinstance(exc, asyncio.CancelledError) else type(exc).__name__)
+                    raise
                 turns.append(AgentTurnRecord(len(turns), turn, execution, tuple(steps[first_step:])))
                 emit("execution.finished", id=len(turns) - 1, **asdict(execution))
-                if execution.status == "timeout":
-                    break
 
             if observation.ended:
                 reason = "game_exited"
-            elif turns and turns[-1].execution.status == "timeout":
-                reason = "execution_timeout"
             else:
                 reason = "turn_limit"
             return GameEpisodeResult(reason, observation, tuple(steps), tuple(turns))

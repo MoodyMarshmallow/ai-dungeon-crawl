@@ -76,7 +76,7 @@ class GameStep:
 class GameEpisodeResult:
     """The outcome and recorded progress of one game episode."""
 
-    stop_reason: Literal["game_exited", "turn_limit", "execution_timeout"]
+    stop_reason: Literal["game_exited", "turn_limit"]
     final_observation: GameObservation
     steps: Tuple[GameStep, ...]
     turns: Tuple["AgentTurnRecord", ...]

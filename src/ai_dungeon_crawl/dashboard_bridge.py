@@ -2,13 +2,10 @@ import argparse
 import asyncio
 import json
 import os
-from pathlib import Path
 import signal
 
-from .cli import MOCK_GOAL, add_game_arguments, create_game
-from .episode import EpisodeRunner
-from .events import observe_events
-from .policies import REASONING_EFFORTS, create_policy
+from .cli import add_game_arguments, run_episode
+from .policies import REASONING_EFFORTS
 
 
 def publish(event, data):
@@ -37,18 +34,9 @@ async def run(args):
 
     watcher = asyncio.create_task(watch_parent())
     try:
-        policy = create_policy(args.policy, model=args.model,
-                               goal=MOCK_GOAL if args.game == "mock" else "Play Dungeon Crawl Stone Soup and win.",
-                               reasoning_summary=args.reasoning_summary,
-                               reasoning_effort=args.reasoning_effort)
-        with observe_events(publish):
-            manual_path = args.manual_path
-            if manual_path is None and args.game == "dcss":
-                manual_path = Path(args.crawl_path).resolve().parent.parent / "docs" / "crawl_manual.rst"
-            result = await EpisodeRunner(create_game(args.game, args.crawl_path), policy,
-                                         manual_source=manual_path).run(
-                max_turns=args.max_turns)
-        publish("episode.finished", {"status": "completed", "stop_reason": result.stop_reason})
+        await run_episode(args.policy, args.model, args.max_turns, args.game, args.crawl_path,
+                          args.manual_path, args.reasoning_effort, args.reasoning_summary,
+                          sink=publish)
     except asyncio.CancelledError:
         publish("episode.finished", {"status": "stopped", "stop_reason": "cancelled"})
     except Exception as exc:

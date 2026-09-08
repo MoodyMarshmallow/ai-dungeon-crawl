@@ -1,12 +1,14 @@
 import argparse
 import asyncio
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
 from .mock_game import MockGameSession
 from .episode import EpisodeRunner
 from .policies import REASONING_EFFORTS, create_policy
-from .events import emit
+from .events import emit, observe_events
+from .run_log import episode_log
 
 
 MOCK_GOAL = (
@@ -27,7 +29,7 @@ def add_game_arguments(parser):
                         help="Optional local Crawl manual to expose to shell scripts")
 
 
-def create_game(game: str, crawl_path: Path = DEFAULT_CRAWL_PATH):
+def create_game(game: str, crawl_path: Path = DEFAULT_CRAWL_PATH, *, save_dir: Path | None = None):
     """Start real games in separate persistent save directories; mocks remain explicit."""
     if game == "mock":
         return MockGameSession()
@@ -37,25 +39,56 @@ def create_game(game: str, crawl_path: Path = DEFAULT_CRAWL_PATH):
     executable = Path(crawl_path).expanduser().resolve()
     if not executable.is_file():
         raise FileNotFoundError("DCSS build missing; run the DCSS build helper or pass --crawl-path")
-    save_dir = Path(__file__).resolve().parents[2] / "runs" / uuid4().hex
+    save_dir = save_dir or new_run_directory()
     return DCSSGameSession(
         executable, cwd=executable.parent, save_dir=save_dir,
         on_tiles=lambda messages: emit("game.tiles", messages=list(messages)),
     )
 
 
+def new_run_directory() -> Path:
+    return Path(__file__).resolve().parents[2] / "runs" / uuid4().hex
+
+
+async def run_episode(backend: str, model: str | None, max_turns: int,
+                      game: str = "dcss", crawl_path: Path = DEFAULT_CRAWL_PATH,
+                      manual_path: Path | None = None, reasoning_effort: str = "default",
+                      reasoning_summary: bool = True, sink=None, run_dir: Path | None = None):
+    """Journal one CLI or dashboard episode, including setup errors and cancellation."""
+    directory = run_dir if run_dir is not None else new_run_directory()
+    with episode_log(directory) as log_path, (observe_events(sink) if sink else nullcontext()):
+        config = {"backend": backend, "model": model, "max_turns": max_turns,
+                  "game": game, "reasoning_effort": reasoning_effort,
+                  "reasoning_summary": reasoning_summary}
+        emit("episode.started", config=config, log_path=str(log_path))
+        try:
+            policy = create_policy(backend, model=model, reasoning_effort=reasoning_effort,
+                                   reasoning_summary=reasoning_summary,
+                                   goal=MOCK_GOAL if game == "mock" else "Play Dungeon Crawl Stone Soup and win.")
+            if manual_path is None and game == "dcss":
+                manual_path = Path(crawl_path).resolve().parent.parent / "docs" / "crawl_manual.rst"
+            result = await EpisodeRunner(create_game(game, crawl_path, save_dir=directory), policy,
+                                         manual_source=manual_path).run(max_turns=max_turns)
+        except asyncio.CancelledError:
+            emit("episode.finished", status="stopped", stop_reason="cancelled")
+            raise
+        except Exception as exc:
+            # Exception messages may contain provider request bodies or credentials.
+            emit("episode.finished", status="error", error=type(exc).__name__)
+            raise
+        else:
+            emit("episode.finished", status="completed", stop_reason=result.stop_reason)
+            return result
+
+
 async def run(backend: str, model: str | None, max_turns: int,
               game: str = "dcss", crawl_path: Path = DEFAULT_CRAWL_PATH,
               manual_path: Path | None = None, reasoning_effort: str = "default"):
-    policy = create_policy(backend, model=model, reasoning_effort=reasoning_effort,
-                           goal=MOCK_GOAL if game == "mock" else "Play Dungeon Crawl Stone Soup and win.")
     print(f"Game: {game}; policy: {backend}", flush=True)
-    if manual_path is None and game == "dcss":
-        manual_path = Path(crawl_path).resolve().parent.parent / "docs" / "crawl_manual.rst"
-    result = await EpisodeRunner(create_game(game, crawl_path), policy,
-                                 manual_source=manual_path).run(
-        max_turns=max_turns,
-    )
+    directory = new_run_directory()
+    print(f"Log: {directory / 'events.jsonl'}", flush=True)
+    result = await run_episode(backend, model, max_turns, game, crawl_path,
+                               manual_path, reasoning_effort, run_dir=directory)
     for record in result.turns:
         print(f"\nAgent turn {record.id}: {len(record.steps)} actions; {record.execution.status}")
         print(record.execution.output, end="")

@@ -181,7 +181,10 @@ echo $!
         self.assertEqual(len(result.output), 100)
         self.assertTrue(result.output_truncated)
         self.assertIsNone(self.terminal._process)
-        self.assertIsNone(self.terminal._directory)
+        self.assertIsNotNone(self.terminal._directory)
+        following = await self.run_code('printf recovered')
+        self.assertEqual(following.status, 'ok')
+        self.assertEqual(following.output, 'recovered')
 
     async def test_budget_and_failure_never_retry(self):
         count = 0
