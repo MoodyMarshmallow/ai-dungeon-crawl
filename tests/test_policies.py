@@ -14,7 +14,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ai_dungeon_crawl.contracts import GameAction, ExecutionResult, AgentTurn, GameObservation, GameStep, AgentTurnRecord
-from ai_dungeon_crawl.policies import CodexPolicy, PydanticPolicy, create_policy
+from ai_dungeon_crawl.policies import CodexPolicy, PydanticPolicy, create_policy, SHELL_DESCRIPTION, INSTRUCTIONS
 from ai_dungeon_crawl.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
 
@@ -23,17 +23,26 @@ OBSERVATION = GameObservation(0, "######\n#@...#\n######")
 
 
 def response(code='await press("l")'):
-    return ModelResponse(parts=[ToolCallPart("execute_python", {"code": code})])
+    return ModelResponse(parts=[ToolCallPart("execute_shell", {"code": code})])
 
 
 class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
+    def test_explicit_reasoning_rejects_other_providers(self):
+        with self.assertRaisesRegex(ValueError, "requires a Codex or OpenAI"):
+            create_policy("pydantic", model="anthropic:example", reasoning_effort="high")
+        self.assertEqual(create_policy("pydantic", model="anthropic:example").reasoning_effort, "default")
+        self.assertEqual(create_policy("pydantic", model="openai:example", reasoning_effort="high").reasoning_effort, "high")
+
     async def test_returns_code_without_executing_it_and_counts_requests(self):
         calls = []
 
         def model(messages, info):
             calls.append(messages)
             self.assertEqual(info.function_tools, [])
-            self.assertEqual([tool.name for tool in info.output_tools], ["execute_python"])
+            self.assertEqual([tool.name for tool in info.output_tools], ["execute_shell"])
+            self.assertTrue(info.output_tools[0].description.startswith(SHELL_DESCRIPTION))
+            self.assertLess(len(INSTRUCTIONS.split()), 40)
+            self.assertNotIn('style_runs', INSTRUCTIONS)
             return response('raise RuntimeError("must not execute inside policy")')
 
         policy = PydanticPolicy(FunctionModel(model))
@@ -86,7 +95,7 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             user_parts = [part for message in messages for part in message.parts
                           if isinstance(part, UserPromptPart)]
             self.assertEqual(len(user_parts), 1)
-            prompts.append(json.loads(user_parts[0].content))
+            prompts.append(json.loads(user_parts[0].content.rsplit('\n\n', 1)[1]))
             return response("pass")
 
         after = GameObservation(1, "next screen")
@@ -116,7 +125,7 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             body = json.loads(request.content)
             requests.append(body)
             self.assertEqual(request.url.path, "/v1/chat/completions")
-            self.assertEqual(body["tools"][0]["function"]["name"], "execute_python")
+            self.assertEqual(body["tools"][0]["function"]["name"], "execute_shell")
             self.assertEqual(len(body["tools"]), 1)
             return httpx2.Response(200, json={
                 "id": "offline", "object": "chat.completion", "created": 0,
@@ -126,7 +135,7 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
                 "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
                     "role": "assistant", "content": None, "tool_calls": [{
                         "id": "call_1", "type": "function", "function": {
-                            "name": "execute_python", "arguments": json.dumps({"code": "pass"})
+                            "name": "execute_shell", "arguments": json.dumps({"code": "pass"})
                         },
                     }],
                 }}],
@@ -155,8 +164,8 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_multiple_output_calls_are_rejected(self):
         def model(messages, info):
-            return ModelResponse(parts=[ToolCallPart("execute_python", {"code": "pass"}, "a"),
-                                        ToolCallPart("execute_python", {"code": "pass"}, "b")])
+            return ModelResponse(parts=[ToolCallPart("execute_shell", {"code": "pass"}, "a"),
+                                        ToolCallPart("execute_shell", {"code": "pass"}, "b")])
 
         with self.assertRaisesRegex(ValueError, "exactly one"):
             await PydanticPolicy(FunctionModel(model)).request_turn(OBSERVATION, ())
@@ -170,9 +179,9 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             user_parts = [part for message in messages for part in message.parts
                           if isinstance(part, UserPromptPart)]
             self.assertEqual(len(user_parts), 1)
-            prompts.append(json.loads(user_parts[0].content))
-            return response('await press("l")\nawait press("l")' if len(prompts) == 1
-                            else 'await press("l")')
+            prompts.append(json.loads(user_parts[0].content.rsplit('\n\n', 1)[1]))
+            return response('crawl press l\ncrawl press l' if len(prompts) == 1
+                            else 'crawl press l')
 
         result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(model))).run()
         self.assertEqual(result.stop_reason, "game_exited")

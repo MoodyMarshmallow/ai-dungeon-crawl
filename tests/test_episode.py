@@ -9,7 +9,7 @@ from unittest.mock import patch
 from ai_dungeon_crawl.contracts import GameAction, AgentTurn, GameObservation
 from ai_dungeon_crawl.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
-from ai_dungeon_crawl.repl import PythonRepl
+from ai_dungeon_crawl.shell import ShellTerminal
 
 
 class CodePolicy:
@@ -23,13 +23,13 @@ class CodePolicy:
 
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("sandbox-exec"),
-                     "Local REPL integration requires macOS sandbox-exec")
+                     "Shell integration requires macOS sandbox-exec")
 class EpisodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_records_each_transition_and_closes_on_exit(self):
         game = MockGameSession()
         result = await EpisodeRunner(game, CodePolicy(
-            'moves = 2\nawait press("l")\nawait press("l")',
-            'await press("l")\nmoves += 1\nprint("Total moves:", moves)',
+            'crawl press l >/dev/null\ncrawl press l >/dev/null',
+            'crawl press l >/dev/null\nprintf "Total moves: 3\\n"',
         )).run()
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual(len(result.steps), 3)
@@ -47,8 +47,8 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_zero_budget_observes_without_applying_action(self):
         game = MockGameSession()
-        result = await EpisodeRunner(game, CodePolicy('await press("l")')).run(max_steps=0)
-        self.assertEqual(result.stop_reason, "step_limit")
+        result = await EpisodeRunner(game, CodePolicy('crawl press l')).run(max_turns=0)
+        self.assertEqual(result.stop_reason, "turn_limit")
         self.assertEqual(result.steps, ())
         self.assertEqual(game.position, 0)
         self.assertTrue(game.closed)
@@ -72,35 +72,41 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
 
         game = TimeoutGame()
         with self.assertRaises(asyncio.TimeoutError):
-            await EpisodeRunner(game, CodePolicy('await press("l")')).run()
+            await EpisodeRunner(game, CodePolicy('crawl press l')).run()
         self.assertEqual(game.position, 1)
         self.assertTrue(game.closed)
 
-    async def test_limit_is_enforced_inside_script_and_cannot_be_caught(self):
-        game = MockGameSession()
-        policy = CodePolicy('while True:\n    try:\n        await press("l")\n    except Exception:\n        pass')
-        result = await EpisodeRunner(game, policy).run(max_steps=1)
-        self.assertEqual(result.stop_reason, "step_limit")
-        self.assertEqual(len(result.steps), 1)
-        self.assertEqual(result.turns[0].execution.status, "stopped")
-        self.assertEqual(game.position, 1)
+    async def test_turn_can_apply_many_keys_without_a_keypress_limit(self):
+        class LongGame(MockGameSession):
+            async def step(self, action):
+                self.position += 1
+                return GameObservation(self.position, "Still playing")
+        game = LongGame()
+        policy = CodePolicy('for i in {1..105}; do crawl press l; done')
+        result = await EpisodeRunner(game, policy).run(max_turns=1)
+        self.assertEqual(result.stop_reason, "turn_limit")
+        self.assertEqual(len(result.steps), 105)
+        self.assertEqual(len(result.turns), 1)
+        self.assertEqual(result.turns[0].execution.status, "ok")
+        self.assertEqual(game.position, 105)
 
     async def test_exit_prevents_further_keys_in_same_script(self):
         game = MockGameSession()
-        result = await EpisodeRunner(game, CodePolicy('for _ in range(20):\n    await press("l")')).run()
+        result = await EpisodeRunner(game, CodePolicy(
+            'for i in 1 2 3 4 5 6 7 8 9 10; do crawl press l; done')).run()
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual(len(result.steps), 3)
 
     async def test_script_error_preserves_steps_state_and_feedback(self):
         game = MockGameSession()
         policy = CodePolicy(
-            'saved = 41\nawait press("l")\nprint("moved")\nraise ValueError("oops")',
-            'print(saved + 1)\nawait press("l")\nawait press("l")',
+            'printf "41\\n" > saved\ncrawl press l >/dev/null\nprintf "moved\\n"\nexit 42',
+            'awk "{print \\$1 + 1}" saved\ncrawl press l >/dev/null\ncrawl press l >/dev/null',
         )
         result = await EpisodeRunner(game, policy).run()
         first = policy.histories[1][0]
         self.assertEqual(first.execution.status, "error")
-        self.assertEqual(first.execution.error, "ValueError: oops")
+        self.assertEqual(first.execution.error, "Shell exited with status 42")
         self.assertEqual(first.execution.output, "moved\n")
         self.assertEqual(len(first.steps), 1)
         self.assertEqual(first.execution.observation.id, 1)
@@ -110,49 +116,55 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.turns[1].steps, result.steps[1:])
 
     async def test_syntax_error_does_not_execute_partial_source(self):
-        result = await EpisodeRunner(MockGameSession(), CodePolicy('await press("l")\nif')).run(max_turns=1)
+        result = await EpisodeRunner(MockGameSession(), CodePolicy(
+            'if true; then\n  crawl press l\n')).run(max_turns=1)
         self.assertEqual(result.steps, ())
-        self.assertIn("SyntaxError", result.turns[0].execution.error)
+        self.assertEqual(result.turns[0].execution.status, "error")
+        self.assertIn("syntax error", result.turns[0].execution.output)
 
     async def test_no_action_scripts_are_bounded_by_model_turn_limit(self):
-        result = await EpisodeRunner(MockGameSession(), CodePolicy('print(observe().id)')).run(max_turns=2)
+        result = await EpisodeRunner(MockGameSession(), CodePolicy(
+            'crawl observe --json >/dev/null')).run(max_turns=2)
         self.assertEqual(result.stop_reason, "turn_limit")
         self.assertEqual(len(result.turns), 2)
         self.assertEqual(result.steps, ())
 
     async def test_zero_turn_budget_never_requests_a_script(self):
-        policy = CodePolicy('await press("l")')
+        policy = CodePolicy('crawl press l')
         result = await EpisodeRunner(MockGameSession(), policy).run(max_turns=0)
         self.assertEqual(result.stop_reason, "turn_limit")
         self.assertEqual(policy.histories, [])
 
     async def test_output_limit_is_reported(self):
-        result = await EpisodeRunner(MockGameSession(), CodePolicy('print("x" * 1000)'),
-                                     PythonRepl(max_output_chars=12)).run(max_turns=1)
+        result = await EpisodeRunner(MockGameSession(), CodePolicy(
+            'python -c \'print("x" * 1000)\''),
+                                     ShellTerminal(max_output_chars=12)).run(max_turns=1)
         self.assertEqual(result.turns[0].execution.output, "x" * 12)
         self.assertTrue(result.turns[0].execution.output_truncated)
 
     async def test_timeout_retains_partial_progress_and_closes_worker(self):
-        game, repl = MockGameSession(), PythonRepl(timeout_seconds=0.2)
-        code = 'await press("l")\nprint("before timeout")\nwhile True:\n    pass'
-        result = await EpisodeRunner(game, CodePolicy(code), repl).run()
-        self.assertEqual(result.stop_reason, "repl_timeout")
+        game, terminal = MockGameSession(), ShellTerminal(timeout_seconds=0.2)
+        code = 'crawl press l >/dev/null\nprintf "before timeout\\n"\nwhile true; do :; done'
+        result = await EpisodeRunner(game, CodePolicy(code), terminal).run()
+        self.assertEqual(result.stop_reason, "execution_timeout")
         self.assertEqual(result.turns[0].execution.output, "before timeout\n")
         self.assertEqual(len(result.steps), 1)
         self.assertEqual(result.final_observation.id, 1)
         self.assertTrue(game.closed)
         with self.assertRaisesRegex(RuntimeError, "closed"):
-            await repl.execute_python("pass", result.final_observation, game.step)
+            await terminal.execute_shell(":", result.final_observation, game.step)
 
     async def test_invalid_key_becomes_feedback_without_game_input(self):
-        result = await EpisodeRunner(MockGameSession(), CodePolicy('await press("ll")')).run(max_turns=1)
+        result = await EpisodeRunner(MockGameSession(), CodePolicy('crawl press ll')).run(max_turns=1)
         self.assertEqual(result.steps, ())
-        self.assertIn("ValueError", result.turns[0].execution.error)
+        self.assertEqual(result.turns[0].execution.status, "error")
+        self.assertIn("GameAction must contain", result.turns[0].execution.output)
 
     async def test_new_episode_gets_fresh_namespace(self):
-        await EpisodeRunner(MockGameSession(), CodePolicy("saved = 42")).run(max_turns=1)
-        result = await EpisodeRunner(MockGameSession(), CodePolicy("print(saved)")).run(max_turns=1)
-        self.assertIn("NameError", result.turns[0].execution.error)
+        await EpisodeRunner(MockGameSession(), CodePolicy("printf '42\\n' > saved")).run(max_turns=1)
+        result = await EpisodeRunner(MockGameSession(), CodePolicy("cat saved")).run(max_turns=1)
+        self.assertEqual(result.turns[0].execution.status, "error")
+        self.assertIn("No such file", result.turns[0].execution.output)
 
     async def test_cancellation_closes_game_and_worker(self):
         started = asyncio.Event()
@@ -162,28 +174,28 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
                 started.set()
                 await asyncio.Event().wait()
 
-        game, repl = WaitingGame(), PythonRepl()
-        task = asyncio.create_task(EpisodeRunner(game, CodePolicy('await press("l")'), repl).run())
+        game, terminal = WaitingGame(), ShellTerminal()
+        task = asyncio.create_task(EpisodeRunner(game, CodePolicy('crawl press l'), terminal).run())
         await asyncio.wait_for(started.wait(), timeout=10)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertTrue(game.closed)
         with self.assertRaisesRegex(RuntimeError, "closed"):
-            await repl.execute_python("pass", GameObservation(0, ""), game.step)
+            await terminal.execute_shell(":", GameObservation(0, ""), game.step)
 
-    async def test_sandbox_denies_file_read_write_network_and_fork(self):
+    async def test_sandbox_denies_synthetic_file_network_and_environment_access(self):
         # Only artificial data: never probe real user secrets in security tests.
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "sentinel.txt"
             sentinel.write_text("fake secret")
             target = Path(directory) / "must-not-exist.txt"
-            code = f'''import os, socket
+            code = f'''python - <<'PY'
+import os, socket
 checks = [
     lambda: open({str(sentinel)!r}).read(),
     lambda: open({str(target)!r}, "w"),
     lambda: socket.create_connection(("127.0.0.1", 9), timeout=1),
-    os.fork,
 ]
 for check in checks:
     try:
@@ -191,12 +203,13 @@ for check in checks:
     except PermissionError:
         print("denied")
 print(os.environ.get("AI_DUNGEON_TEST_SECRET", "absent"))
+PY
 '''
             with patch.dict("os.environ", {"AI_DUNGEON_TEST_SECRET": "fake credential"}):
                 result = await EpisodeRunner(MockGameSession(), CodePolicy(code)).run(max_turns=1)
             execution = result.turns[0].execution
             self.assertIsNone(execution.error)
-            self.assertEqual(execution.output, "denied\n" * 4 + "absent\n")
+            self.assertEqual(execution.output, "denied\n" * 3 + "absent\n")
             self.assertFalse(target.exists())
 
 
@@ -214,10 +227,10 @@ class ContractTests(unittest.IsolatedAsyncioTestCase):
             AgentTurn("x" * 65537)
 
     async def test_unsupported_platform_fails_closed(self):
-        repl = PythonRepl()
-        with patch("ai_dungeon_crawl.repl.sys.platform", "unsupported"):
+        terminal = ShellTerminal()
+        with patch("ai_dungeon_crawl.shell.sys.platform", "unsupported"):
             with self.assertRaisesRegex(RuntimeError, "no unsafe fallback"):
-                await repl.execute_python("pass", GameObservation(0, ""), MockGameSession().step)
+                await terminal.execute_shell(":", GameObservation(0, ""), MockGameSession().step)
 
 
 if __name__ == "__main__":

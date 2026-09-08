@@ -10,3 +10,6 @@ wheels/
 .venv
 
 dashboard/node_modules/
+
+# Isolated DCSS saves and episode logs
+runs/

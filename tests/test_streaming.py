@@ -27,7 +27,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         async def stream(messages, info):
             self.assertFalse(info.allow_text_output)
             yield {0: DeltaThinkingPart(content="Check corridor.", signature="private-signature")}
-            yield {1: DeltaToolCall(name="execute_python", json_args='{"code":"pa')}
+            yield {1: DeltaToolCall(name="execute_shell", json_args='{"code":"pa')}
             await release.wait()
             yield {1: DeltaToolCall(json_args='ss"}')}
 
@@ -62,24 +62,24 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_multiple_streamed_calls_are_still_rejected(self):
         async def stream(messages, info):
-            yield {0: DeltaToolCall(name="execute_python", json_args='{"code":"pass"}', tool_call_id="a"),
-                   1: DeltaToolCall(name="execute_python", json_args='{"code":"pass"}', tool_call_id="b")}
+            yield {0: DeltaToolCall(name="execute_shell", json_args='{"code":"pass"}', tool_call_id="a"),
+                   1: DeltaToolCall(name="execute_shell", json_args='{"code":"pass"}', tool_call_id="b")}
         with observe_events(lambda *_: None):
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 await PydanticPolicy(FunctionModel(stream_function=stream)).request_turn(GameObservation(0, "x"), ())
 
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("sandbox-exec"), "macOS sandbox required")
-    async def test_real_repl_game_and_output_events_precede_completion(self):
+    async def test_real_shell_game_and_output_events_precede_completion(self):
         seen = []
         with observe_events(lambda event, data: seen.append((event, data))):
             async def stream(messages, info):
-                yield {0: DeltaToolCall(name="execute_python", json_args=json.dumps({
-                    "code": 'await press("l")\nprint("moved")'
+                yield {0: DeltaToolCall(name="execute_shell", json_args=json.dumps({
+                    "code": 'crawl press l\ncrawl press l\ncrawl press l\nprintf moved'
                 }), tool_call_id="step")}
             result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
         kinds = [event for event, _ in seen]
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual(kinds.count("game.step"), 3)
-        self.assertEqual(kinds.count("repl.submitted"), 3)
-        self.assertLess(kinds.index("repl.submitted"), kinds.index("game.step"))
-        self.assertLess(kinds.index("repl.output"), kinds.index("repl.finished"))
+        self.assertEqual(kinds.count("execution.submitted"), 1)
+        self.assertLess(kinds.index("execution.submitted"), kinds.index("game.step"))
+        self.assertLess(kinds.index("execution.output"), kinds.index("execution.finished"))

@@ -2,13 +2,13 @@ import argparse
 import asyncio
 import json
 import os
+from pathlib import Path
 import signal
 
-from .cli import MOCK_GOAL
-from .mock_game import MockGameSession
+from .cli import MOCK_GOAL, add_game_arguments, create_game
 from .episode import EpisodeRunner
 from .events import observe_events
-from .policies import create_policy
+from .policies import REASONING_EFFORTS, create_policy
 
 
 def publish(event, data):
@@ -37,11 +37,17 @@ async def run(args):
 
     watcher = asyncio.create_task(watch_parent())
     try:
-        policy = create_policy(args.policy, model=args.model, goal=MOCK_GOAL,
-                               reasoning_summary=args.reasoning_summary)
+        policy = create_policy(args.policy, model=args.model,
+                               goal=MOCK_GOAL if args.game == "mock" else "Play Dungeon Crawl Stone Soup and win.",
+                               reasoning_summary=args.reasoning_summary,
+                               reasoning_effort=args.reasoning_effort)
         with observe_events(publish):
-            result = await EpisodeRunner(MockGameSession(), policy).run(
-                max_steps=args.max_steps, max_turns=args.max_turns)
+            manual_path = args.manual_path
+            if manual_path is None and args.game == "dcss":
+                manual_path = Path(args.crawl_path).resolve().parent.parent / "docs" / "crawl_manual.rst"
+            result = await EpisodeRunner(create_game(args.game, args.crawl_path), policy,
+                                         manual_source=manual_path).run(
+                max_turns=args.max_turns)
         publish("episode.finished", {"status": "completed", "stop_reason": result.stop_reason})
     except asyncio.CancelledError:
         publish("episode.finished", {"status": "stopped", "stop_reason": "cancelled"})
@@ -54,12 +60,15 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Private dashboard event bridge")
+    add_game_arguments(parser)
     parser.add_argument("--policy", choices=("codex", "pydantic"), default="codex")
     parser.add_argument("--model")
-    parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument("--reasoning-effort", choices=REASONING_EFFORTS, default="default")
     parser.add_argument("--max-turns", type=int, default=3)
     parser.add_argument("--reasoning-summary", action="store_true")
     args = parser.parse_args()
+    if args.max_turns < 0:
+        parser.error("Turn limit must be nonnegative")
     if args.policy == "codex" and not args.model:
         args.model = "gpt-5.6-luna"
     if not args.model:

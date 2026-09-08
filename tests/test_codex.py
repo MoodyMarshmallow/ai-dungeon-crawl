@@ -17,7 +17,7 @@ from ai_dungeon_crawl.events import observe_events
 def events(code="pass", complete=True):
     arguments = json.dumps({"code": code})
     item = {"type": "function_call", "id": "fc_1", "call_id": "call_1",
-            "name": "execute_python", "arguments": arguments, "status": "completed"}
+            "name": "execute_shell", "arguments": arguments, "status": "completed"}
     response = {"id": "resp_1", "object": "response", "created_at": 1,
                 "model": "test-model", "status": "completed", "output": [item],
                 "parallel_tool_calls": False, "tool_choice": "required", "tools": [],
@@ -67,7 +67,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(body["store"])
             self.assertFalse(body["parallel_tool_calls"])
             self.assertNotIn("max_output_tokens", body)
-            self.assertEqual([t["name"] for t in body["tools"]], ["execute_python"])
+            self.assertEqual([t["name"] for t in body["tools"]], ["execute_shell"])
             self.assertNotIn("format", body.get("text", {}))
             return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=events())
 
@@ -136,11 +136,23 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(body["stream"])
             self.assertFalse(body["store"])
             self.assertEqual(body["reasoning"]["summary"], "auto")
+            self.assertEqual(body["reasoning"]["effort"], "high")
             return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=events())
         with observe_events(lambda event, data: seen.append((event, data))):
-            turn = await self.request(handle, reasoning_summary=True)
+            turn = await self.request(handle, reasoning_summary=True, reasoning_effort="high")
         self.assertEqual(turn.code, "pass")
         self.assertTrue(any(event == "model.part" and data["kind"] == "tool" for event, data in seen))
+
+    async def test_default_reasoning_preserves_provider_default(self):
+        def handle(request):
+            body = json.loads(request.content)
+            self.assertNotIn("effort", body.get("reasoning") or {})
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=events())
+        await self.request(handle, reasoning_effort="default")
+
+    async def test_invalid_reasoning_is_rejected_before_network(self):
+        with self.assertRaisesRegex(ValueError, "Invalid reasoning"):
+            await self.request(lambda _: self.fail("must not contact endpoint"), reasoning_effort="bogus")
 
     async def test_observed_codex_incomplete_stream_is_rejected(self):
         with observe_events(lambda *_: None):

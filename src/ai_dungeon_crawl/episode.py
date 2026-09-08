@@ -1,24 +1,28 @@
 import logging
 from dataclasses import asdict
 import sys
+from pathlib import Path
 from typing import Optional
 
-from .contracts import GameEpisodeResult, GameSession, Policy, GameStep, AgentTurnRecord
-from .repl import PythonRepl, StopExecution
+from .contracts import GameEpisodeResult, GameSession, Policy, GameStep, AgentTurnRecord, StopExecution
+from .shell import ShellTerminal
 from .events import emit
 
 
 class EpisodeRunner:
-    """Run one episode with a fresh game, policy context and REPL namespace."""
+    """Run one episode with a fresh game, policy context and shell workspace."""
 
-    def __init__(self, game: GameSession, policy: Policy, repl: Optional[PythonRepl] = None):
+    def __init__(self, game: GameSession, policy: Policy,
+                 terminal: Optional[ShellTerminal] = None,
+                 manual_source: Optional[Path | str] = None):
         self._game = game
         self._policy = policy
-        self._repl = repl if repl is not None else PythonRepl()
+        self._terminal = terminal if terminal is not None else ShellTerminal(
+            manual_path=Path(manual_source) if manual_source is not None else None)
 
-    async def run(self, *, max_steps: int = 100, max_turns: int = 50) -> GameEpisodeResult:
-        if max_steps < 0 or max_turns < 0:
-            raise ValueError("GameAction and agent-turn limits cannot be negative")
+    async def run(self, *, max_turns: int = 50) -> GameEpisodeResult:
+        if max_turns < 0:
+            raise ValueError("Agent-turn limit cannot be negative")
         steps, turns = [], []
         try:
             observation = await self._game.start()
@@ -28,8 +32,6 @@ class EpisodeRunner:
                 nonlocal observation
                 if observation.ended:
                     raise StopExecution("Game exited")
-                if len(steps) >= max_steps:
-                    raise StopExecution("GameAction limit reached")
                 following = await self._game.step(action)
                 if following.id <= observation.id:
                     raise ValueError("GameObservation IDs must increase after each action")
@@ -38,23 +40,21 @@ class EpisodeRunner:
                 emit("game.step", key=action.key, count=len(steps), observation=asdict(observation))
                 return observation
 
-            while not observation.ended and len(steps) < max_steps and len(turns) < max_turns:
+            while not observation.ended and len(turns) < max_turns:
                 emit("turn.started", id=len(turns))
                 turn = await self._policy.request_turn(observation, tuple(turns))
-                emit("repl.submitted", id=len(turns), code=turn.code, model_requests=turn.model_requests)
+                emit("execution.submitted", id=len(turns), code=turn.code, model_requests=turn.model_requests)
                 first_step = len(steps)
-                execution = await self._repl.execute_python(turn.code, observation, press)
+                execution = await self._terminal.execute_shell(turn.code, observation, press)
                 turns.append(AgentTurnRecord(len(turns), turn, execution, tuple(steps[first_step:])))
-                emit("repl.finished", id=len(turns) - 1, **asdict(execution))
+                emit("execution.finished", id=len(turns) - 1, **asdict(execution))
                 if execution.status == "timeout":
                     break
 
             if observation.ended:
                 reason = "game_exited"
-            elif len(steps) >= max_steps:
-                reason = "step_limit"
             elif turns and turns[-1].execution.status == "timeout":
-                reason = "repl_timeout"
+                reason = "execution_timeout"
             else:
                 reason = "turn_limit"
             return GameEpisodeResult(reason, observation, tuple(steps), tuple(turns))
@@ -62,7 +62,7 @@ class EpisodeRunner:
             # Attempt both cleanups and preserve the original failure, if any.
             original_error = sys.exc_info()[1]
             cleanup_error = None
-            for close in (self._repl.close, self._game.close):
+            for close in (self._terminal.close, self._game.close):
                 try:
                     await close()
                 except Exception as exc:

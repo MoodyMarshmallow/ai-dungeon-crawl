@@ -3,6 +3,26 @@ from typing import Literal, Optional, Protocol, Tuple
 
 
 @dataclass(frozen=True)
+class ScreenStyle:
+    """A contiguous run of visual terminal attributes on one screen row.
+
+    Coordinates are zero-based. Styles describe rendering only; they do not
+    carry gameplay meaning.
+    """
+
+    row: int
+    col: int
+    length: int
+    fg: str = "default"
+    bg: str = "default"
+    bold: bool = False
+    italics: bool = False
+    underline: bool = False
+    reverse: bool = False
+    blink: bool = False
+
+
+@dataclass(frozen=True)
 class GameObservation:
     """A complete rendered screen at an input boundary, or after game exit.
 
@@ -10,11 +30,19 @@ class GameObservation:
     `screen` preserves whitespace; it is never a raw terminal-output chunk.
     A waiting observation may be a menu/prompt, not necessarily a game turn.
     `ended` means the process ended, not necessarily that the player died.
+    `width` and `height` are the rendered screen bounds. `styles` contains
+    visual runs only when attributes differ from their defaults, and `cursor`
+    is a zero-based (row, column) position when known. None of this metadata
+    carries gameplay meaning.
     """
 
     id: int
     screen: str
     ended: bool = False
+    width: int = 0
+    height: int = 0
+    styles: Tuple[ScreenStyle, ...] = ()
+    cursor: Optional[Tuple[int, int]] = None
 
 
 @dataclass(frozen=True)
@@ -48,20 +76,24 @@ class GameStep:
 class GameEpisodeResult:
     """The outcome and recorded progress of one game episode."""
 
-    stop_reason: Literal["game_exited", "step_limit", "turn_limit", "repl_timeout"]
+    stop_reason: Literal["game_exited", "turn_limit", "execution_timeout"]
     final_observation: GameObservation
     steps: Tuple[GameStep, ...]
     turns: Tuple["AgentTurnRecord", ...]
 
 
-def validate_python_source(code: str) -> None:
-    """Raise ValueError unless code is text of at most 64 KiB in UTF-8.
+def validate_source(code: str) -> None:
+    """Raise ValueError unless source is text of at most 64 KiB in UTF-8.
 
-    This checks input type and size, not Python syntax or execution safety.
-    Empty source is allowed; syntax errors are handled during REPL execution.
+    This checks input type and size, not syntax or execution safety.
+    Empty source is allowed; syntax errors are handled during execution.
     """
     if not isinstance(code, str) or len(code.encode("utf-8")) > 65536:
         raise ValueError("Code must be text of at most 64 KiB")
+
+
+class StopExecution(Exception):
+    """Abort the current submitted script after a harness limit is reached."""
 
 
 @dataclass(frozen=True)
@@ -83,7 +115,7 @@ class AgentTurn:
     def __post_init__(self) -> None:
         if self.model_requests is not None and self.model_requests < 0:
             raise ValueError("model_requests cannot be negative")
-        validate_python_source(self.code)
+        validate_source(self.code)
 
 
 @dataclass(frozen=True)
@@ -135,7 +167,7 @@ class Policy(Protocol):
 
     Owns prompt construction, context selection and bounded model retries.
     A cycle may involve multiple model turns and ends with one accepted script.
-    Has no game or REPL handle: the runner dispatches execute_python after
+    Has no game or terminal handle: the runner dispatches execute_shell after
     request_turn returns. History includes script output, errors and steps.
     Model clients are configured/closed by the caller, outside the episode.
     """

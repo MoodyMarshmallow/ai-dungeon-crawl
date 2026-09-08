@@ -1,0 +1,31 @@
+diff --git a/crawl-ref/source/tileweb.cc b/crawl-ref/source/tileweb.cc
+--- a/crawl-ref/source/tileweb.cc
++++ b/crawl-ref/source/tileweb.cc
+@@ -694,6 +694,10 @@ wint_t TilesFramework::await_input(bool(*has_console_input)())
+     int result;
+     fd_set fds;
+     int maxfd = m_sock;
++    // Opt-in harness boundary, ordered after the terminal refresh and tile
++    // flush. Ordinary clients see no additional output. One marker per input
++    // call (not per socket wakeup), including keys that leave the screen alone.
++    bool harness_boundary_sent = false;
+ 
+     save_signal_mask saved_sig_mask;
+     sigset_t signals_to_wait_for;
+@@ -711,6 +715,16 @@ wint_t TilesFramework::await_input(bool(*has_console_input)())
+ 
+         if (has_console_input())
+             return 0;
++        if (!harness_boundary_sent)
++        {
++            const char *marker = getenv("DCSS_INPUT_MARKER");
++            if (marker && *marker)
++            {
++                fprintf(stdout, "\033]777;dcss-input;%s\007", marker);
++                fflush(stdout);
++            }
++            harness_boundary_sent = true;
++        }
+         result = pselect(maxfd + 1, &fds, nullptr, nullptr, nullptr,
+                          &saved_sig_mask.old);
+         if (has_console_input())
