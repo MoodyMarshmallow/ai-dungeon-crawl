@@ -5,7 +5,7 @@ import subprocess
 
 
 def main():
-    """Apply the opt-in input marker and build a separate local WebTiles binary."""
+    """Apply opt-in harness patches and build a separate local WebTiles binary."""
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Build DCSS for the agent harness")
     parser.add_argument("crawl", nargs="?", type=Path, default=root.parent / "crawl",
@@ -15,14 +15,21 @@ def main():
     source = checkout / "crawl-ref/source"
     if not (source / "tileweb.cc").is_file():
         parser.error("Expected a DCSS checkout containing crawl-ref/source/tileweb.cc")
-    patch = root / "patches/dcss-input-boundary.patch"
-    applied = subprocess.run(["git", "apply", "--reverse", "--check", str(patch)],
-                             cwd=checkout, capture_output=True).returncode == 0
-    if not applied:
+    patches = [root / "patches" / name for name in (
+        "dcss-input-boundary.patch", "dcss-session-guard.patch",
+    )]
+    pending = []
+    for patch in patches:
+        applied = subprocess.run(["git", "apply", "--reverse", "--check", str(patch)],
+                                 cwd=checkout, capture_output=True).returncode == 0
+        if applied:
+            continue
         check = subprocess.run(["git", "apply", "--check", str(patch)], cwd=checkout,
                                capture_output=True, text=True)
         if check.returncode:
-            parser.error("Readiness patch does not match this checkout; no files changed.\n" + check.stderr)
+            parser.error(f"{patch.name} does not match this checkout; no files changed.\n" + check.stderr)
+        pending.append(patch)
+    for patch in pending:
         subprocess.run(["git", "apply", str(patch)], cwd=checkout, check=True)
     subprocess.run([
         "make", f"-j{min(os.cpu_count() or 2, 8)}", "WEBTILES=1", "DEBUG=1",

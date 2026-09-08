@@ -1,0 +1,217 @@
+diff --git a/crawl-ref/source/hints.cc b/crawl-ref/source/hints.cc
+index 9bbee9d155..32a218a1bb 100644
+--- a/crawl-ref/source/hints.cc
++++ b/crawl-ref/source/hints.cc
+@@ -226,6 +226,8 @@ void pick_hints(newgame_def& choice)
+     vbox->on_activate_event([&](const ActivateEvent& event) {
+         const auto button = static_pointer_cast<MenuButton>(event.target());
+         int id = button->id;
++        if (id == CK_ESCAPE && harness_no_exit())
++            return true;
+         if (id == CK_ESCAPE)
+             return done = cancelled = true;
+         else if (id == '*')
+@@ -258,6 +260,8 @@ void pick_hints(newgame_def& choice)
+     auto popup = make_shared<ui::Popup>(vbox);
+ 
+     popup->on_keydown_event([&](const KeyEvent& ev) {
++        if (harness_no_exit() && ui::key_exits_popup(ev.key(), false))
++            return true;
+         if (ui::key_exits_popup(ev.key(), false))
+             return done = cancelled = true;
+         return false;
+diff --git a/crawl-ref/source/libunix.cc b/crawl-ref/source/libunix.cc
+index a0ca0e67f8..acda558c0c 100644
+--- a/crawl-ref/source/libunix.cc
++++ b/crawl-ref/source/libunix.cc
+@@ -829,7 +829,7 @@ static void _headless_startup()
+     // TODO: windows ctrl-c? should be able to add a handler on top of
+     // libutil.cc:console_handler
+ #if defined(USE_UNIX_SIGNALS) && defined(SIGINT)
+-    signal(SIGINT, handle_hangup);
++    signal(SIGINT, harness_no_exit() ? SIG_IGN : handle_hangup);
+ #endif
+ 
+ #ifdef USE_TILE_WEB
+diff --git a/crawl-ref/source/libutil.cc b/crawl-ref/source/libutil.cc
+index 6b2de4cbab..420667bbe8 100644
+--- a/crawl-ref/source/libutil.cc
++++ b/crawl-ref/source/libutil.cc
+@@ -22,6 +22,12 @@
+ #include "unicode.h"
+ #include "viewgeom.h"
+ 
++bool harness_no_exit()
++{
++    const char *value = getenv("DCSS_HARNESS_NO_EXIT");
++    return value && strcmp(value, "1") == 0;
++}
++
+ #ifdef TARGET_OS_WINDOWS
+     #undef ARRAYSZ
+     #include <windows.h>
+@@ -704,7 +710,7 @@ void init_signals()
+     // for local tiles, headless mode is checked in the signal handler, so
+     // we want to unconditionally add the handler here to get ctrl-c. For
+     // console this is handled somewhat differently; see _headless_startup().
+-    signal(SIGINT, handle_hangup);
++    signal(SIGINT, harness_no_exit() ? SIG_IGN : handle_hangup);
+ #else
+     signal(SIGINT, SIG_IGN);
+ #endif
+diff --git a/crawl-ref/source/libutil.h b/crawl-ref/source/libutil.h
+index 8d0d454906..3b63ffb7a0 100644
+--- a/crawl-ref/source/libutil.h
++++ b/crawl-ref/source/libutil.h
+@@ -5,6 +5,10 @@
+ 
+ #pragma once
+ 
++// Opt-in harness policy for user-requested session exits. External process
++// termination and ordinary game endings remain unaffected.
++bool harness_no_exit();
++
+ #include <cctype>
+ #include <map>
+ #include <memory>
+diff --git a/crawl-ref/source/main.cc b/crawl-ref/source/main.cc
+index 0fc93b9169..a03601b360 100644
+--- a/crawl-ref/source/main.cc
++++ b/crawl-ref/source/main.cc
+@@ -2120,6 +2120,14 @@ void process_command(command_type cmd, command_type prev_cmd)
+         cmd = m.cmd;
+     }
+ 
++    if (harness_no_exit()
++        && (cmd == CMD_SAVE_GAME || cmd == CMD_SAVE_GAME_NOW
++            || cmd == CMD_QUIT || cmd == CMD_SUSPEND_GAME))
++    {
++        mpr("Session exit is disabled by the harness.");
++        return;
++    }
++
+     switch (cmd)
+     {
+ #ifdef USE_TILE
+diff --git a/crawl-ref/source/newgame.cc b/crawl-ref/source/newgame.cc
+index 89b36b5248..f2b066e078 100644
+--- a/crawl-ref/source/newgame.cc
++++ b/crawl-ref/source/newgame.cc
+@@ -386,6 +386,9 @@ static bool _reroll_random(newgame_def& ng)
+     int c;
+     popup->on_keydown_event([&](const KeyEvent& ev) {
+         c = ev.key();
++        if (harness_no_exit()
++            && (key_is_escape(c) || c == CK_MOUSE_CMD || toalower(c) == 'q'))
++            return true;
+         return done = true;
+     });
+ 
+@@ -673,6 +676,8 @@ static void _choose_name(newgame_def& ng, newgame_def& choice)
+                 ok_switcher->current() = good_name ? 0 : 1;
+                 break;
+             case CK_ESCAPE: // redundant with key_exits_popup check below
++                if (harness_no_exit())
++                    break;
+                 done = cancel = true;
+                 break;
+         }
+@@ -681,6 +686,8 @@ static void _choose_name(newgame_def& ng, newgame_def& choice)
+ 
+     popup->on_keydown_event([&](const KeyEvent& ev) {
+         auto key = ev.key();
++        if (harness_no_exit() && ui::key_exits_popup(key, false))
++            return true;
+         if (ui::key_exits_popup(key, false))
+             return done = cancel = true;
+ 
+@@ -959,6 +966,8 @@ static void _choose_seed(newgame_def& ng, newgame_def& choice,
+     // TODO: ESC gets absorbed by active buttons, does this make sense?
+     popup->on_keydown_event([&](const KeyEvent& ev) {
+         const auto key = ev.key();
++        if (harness_no_exit() && ui::key_exits_popup(key, false))
++            return true;
+         if (key == '?') // TODO: text box absorbs this still
+             show_help('D', "Seeded play"); // TODO: scroll to section
+ #ifdef USE_TILE_LOCAL
+@@ -1236,6 +1245,10 @@ public:
+ 
+         m_vbox->on_hotkey_event([this](const KeyEvent& event) {
+             const int lastch = event.key();
++            if (harness_no_exit()
++                && (ui::key_exits_popup(lastch, false)
++                    || lastch == 'X' || lastch == CONTROL('Q')))
++                return true;
+             if (ui::key_exits_popup(lastch, false))
+                 return done = cancel = true;
+             switch (lastch)
+@@ -1872,6 +1885,8 @@ static bool _prompt_weapon(const newgame_def& ng, newgame_def& ng_choice,
+         switch (id)
+         {
+             case M_ABORT:
++                if (harness_no_exit())
++                    return true;
+                 ret = false;
+                 return done = true;
+             case M_APTITUDES:
+@@ -1905,6 +1920,10 @@ static bool _prompt_weapon(const newgame_def& ng, newgame_def& ng_choice,
+     auto popup = make_shared<ui::Popup>(vbox);
+     popup->on_hotkey_event([&](const KeyEvent& ev) {
+         const int lastch = ev.key();
++        if (harness_no_exit()
++            && (ui::key_exits_popup(lastch, false) || lastch == ' '
++                || lastch == 'X' || lastch == CONTROL('Q')))
++            return true;
+         if (ui::key_exits_popup(lastch, false)
+             || lastch == ' ')
+         {
+@@ -2275,6 +2294,10 @@ static void _prompt_gamemode_map(newgame_def& ng, newgame_def& ng_choice,
+     auto popup = make_shared<ui::Popup>(vbox);
+     popup->on_hotkey_event([&](const KeyEvent& ev) {
+         const int lastch = ev.key();
++        if (harness_no_exit()
++            && (key_exits_popup(lastch, false)
++                || lastch == 'X' || lastch == CONTROL('Q')))
++            return true;
+         if (key_exits_popup(lastch, false))
+             return done = cancel = true;
+         switch (lastch)
+diff --git a/crawl-ref/source/stairs.cc b/crawl-ref/source/stairs.cc
+index cacdd479cf..9b43840d48 100644
+--- a/crawl-ref/source/stairs.cc
++++ b/crawl-ref/source/stairs.cc
+@@ -30,6 +30,7 @@
+ #include "item-name.h"
+ #include "items.h"
+ #include "level-state-type.h"
++#include "libutil.h"
+ #include "losglobal.h"
+ #include "mapmark.h"
+ #include "message.h"
+@@ -359,6 +360,13 @@ static void _update_travel_cache(const level_id& old_level,
+ // These checks are probably unnecessary.
+ static bool _check_stairs(const dungeon_feature_type ftype, bool going_up)
+ {
++    if (harness_no_exit() && ftype == DNGN_EXIT_DUNGEON && going_up
++        && !player_has_orb())
++    {
++        mpr("Session exit is disabled by the harness.");
++        return false;
++    }
++
+     // If it's not bidirectional, check that the player is headed
+     // in the right direction.
+     if (!feat_is_bidirectional_portal(ftype))
+diff --git a/crawl-ref/source/startup.cc b/crawl-ref/source/startup.cc
+index 0a6d2bf2a0..f90c757799 100644
+--- a/crawl-ref/source/startup.cc
++++ b/crawl-ref/source/startup.cc
+@@ -838,6 +838,8 @@ void UIStartupMenu::on_show()
+ 
+         if (key_is_escape(keyn) || keyn == CK_MOUSE_CMD)
+         {
++            if (harness_no_exit())
++                return true;
+             // End the game
+             return done = end_game = true;
+         }

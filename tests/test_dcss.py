@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from ai_dungeon_crawl.contracts import GameAction
 from ai_dungeon_crawl.dcss import DCSSGameSession, key_bytes
@@ -64,6 +64,27 @@ class TerminalTests(unittest.TestCase):
 
 
 class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_defaults_leave_weapon_choice_and_enable_exit_guard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            overrides = ("-name", "TransportTest", "-background", "Fighter")
+            session = DCSSGameSession("/no/game", save_dir=directory, extra_args=overrides)
+            with patch("ai_dungeon_crawl.dcss.socket.socket.bind"), patch(
+                "ai_dungeon_crawl.dcss.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock, side_effect=FileNotFoundError,
+            ) as spawn:
+                try:
+                    with self.assertRaises(FileNotFoundError):
+                        await session.start()
+                finally:
+                    await session.close()
+            args = spawn.call_args.args
+            self.assertEqual(args.count("-name"), 1)
+            self.assertEqual(args.count("-background"), 1)
+            self.assertEqual(args[args.index("-species") + 1], "Minotaur")
+            self.assertFalse(any("weapon" in arg for arg in args))
+            self.assertEqual(args[-len(overrides):], overrides)
+            self.assertEqual(spawn.call_args.kwargs["env"]["DCSS_HARNESS_NO_EXIT"], "1")
+
     def test_fragmented_tile_utf8_is_decoded_only_after_full_message(self):
         messages = []
         session = DCSSGameSession("/no/game", on_tiles=lambda batch: messages.extend(batch))
@@ -119,20 +140,27 @@ class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
                                       on_tiles=lambda batch: messages.extend(batch))
             try:
                 before = await session.start()
-                self.assertIn("Enter your name", before.screen)
+                self.assertIn("Agent the Minotaur Berserker", before.screen)
+                self.assertIn("choice of weapons", before.screen)
+                self.assertNotIn("Health:", before.screen)
                 after = await session.step(GameAction("!"))
                 self.assertEqual(before.screen, after.screen)
                 self.assertGreater(after.id, before.id)
                 self.assertEqual((after.width, after.height), (100, 30))
                 self.assertTrue(after.styles)
                 self.assertIn("version", [message["msg"] for message in messages])
+                for key in ("ESC", "CTRL+G", " ", "X", "CTRL+Q", "CTRL+C"):
+                    guarded = await session.step(GameAction(key))
+                    self.assertEqual(before.screen, guarded.screen, key)
+                    self.assertFalse(guarded.ended, key)
+                    self.assertIsNone(session._process.returncode, key)
             finally:
                 await session.close()
                 await session.close()
             self.assertIsNotNone(session._process.returncode)
             self.assertTrue(Path(directory).exists())
 
-    async def test_character_inventory_wait_and_exit(self):
+    async def test_character_override_inventory_wait_and_blocked_exit(self):
         messages = []
         with tempfile.TemporaryDirectory(prefix="dcss-test-") as directory:
             session = DCSSGameSession(os.environ["DCSS_TEST_BINARY"], save_dir=directory,
@@ -140,6 +168,7 @@ class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
                 on_tiles=lambda batch: messages.extend(batch))
             try:
                 first = await session.start()
+                self.assertIn("TransportTest the Minotaur Fighter", first.screen)
                 self.assertIn("choice of weapons", first.screen)
                 playing = await session.step(GameAction("a"))
                 self.assertIn("Health:", playing.screen)
@@ -150,17 +179,25 @@ class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
                 await session.step(GameAction("ESC"))
                 waited = await session.step(GameAction("."))
                 self.assertIn("Time: 1.0", waited.screen)
-                prompt = await session.step(GameAction("CTRL+Q"))
-                self.assertIn("quit", prompt.screen.lower())
-                for key in "quit":
-                    prompt = await session.step(GameAction(key))
-                exited = await session.step(GameAction("ENTER"))
-                # DCSS offers a final inventory view before the score page.
-                for _ in range(5):
-                    if exited.ended:
-                        break
-                    key = "ESC" if "gear slots" in exited.screen else "ENTER"
-                    exited = await session.step(GameAction(key))
-                self.assertTrue(exited.ended)
+                for key in ("S", "CTRL+S", "CTRL+Q", "CTRL+Z"):
+                    blocked = await session.step(GameAction(key))
+                    self.assertIn("Session exit is disabled by the harness.", blocked.screen)
+                    self.assertIn("Health:", blocked.screen)
+                    self.assertFalse(blocked.ended)
+                    self.assertIsNone(session._process.returncode)
+                for key in ("S", "Q"):
+                    await session.step(GameAction("ESC"))
+                    blocked = await session.step(GameAction(key))
+                    self.assertIn("Session exit is disabled by the harness.", blocked.screen)
+                    self.assertIn("Health:", blocked.screen)
+                    self.assertFalse(blocked.ended)
+                # The guard acts on game commands, not raw keys: S still works
+                # as ordinary text when entering an item inscription.
+                await session.step(GameAction("{"))
+                await session.step(GameAction("a"))
+                await session.step(GameAction("S"))
+                await session.step(GameAction("ENTER"))
+                inscribed = await session.step(GameAction("i"))
+                self.assertIn("{S}", inscribed.screen)
             finally:
                 await session.close()

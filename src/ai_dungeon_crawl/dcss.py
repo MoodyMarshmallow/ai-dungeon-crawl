@@ -87,10 +87,17 @@ class DCSSGameSession:
         env = dict(PATH=os.defpath, HOME=str(self.save_dir),
                    TERM="xterm-256color", LANG="en_US.UTF-8",
                    LC_ALL="en_US.UTF-8", COLUMNS=str(self.width), LINES=str(self.height),
-                   DCSS_INPUT_MARKER=self._nonce)
+                   DCSS_INPUT_MARKER=self._nonce, DCSS_HARNESS_NO_EXIT="1")
         self._log = (self.save_dir / "process.log").open("ab")
+        # DCSS rejects duplicate command-line options. Fill in only missing
+        # character options, and leave weapon selection to the agent.
+        supplied = {arg.lstrip("-").lower() for arg in self.extra_args if arg.startswith("-")}
+        character_args = [arg for option, value in (
+            ("name", "Agent"), ("species", "Minotaur"), ("background", "Berserker")
+        ) if option not in supplied for arg in (f"-{option}", value)]
         args = [str(self.executable), "-webtiles-socket", game_socket, "-await-connection",
                 "-rc", "/dev/null", "-dir", str(self.save_dir),
+                *character_args,
                 "-extra-opt-last", f"save_dir = {self.save_dir}",
                 "-extra-opt-last", f"macro_dir = {self.save_dir / 'macros'}",
                 "-extra-opt-last", f"morgue_dir = {self.save_dir / 'morgue'}",
