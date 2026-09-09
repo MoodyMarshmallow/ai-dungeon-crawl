@@ -9,7 +9,7 @@ const button = (id: string) => $(id) as HTMLButtonElement;
 const game = new TerminalDisplay($("screen"), true);
 const shell = new TerminalDisplay($("shell-terminal"));
 const entries = new Map<string, HTMLElement>();
-const turns = new Map<number, HTMLElement>();
+const turns = new Map<number, HTMLDetailsElement>();
 let current: State | null = null;
 let connected = false,
   pending = false;
@@ -106,6 +106,13 @@ function render(state: State) {
       title.append(number, heading);
       group.setAttribute("aria-labelledby", title.id);
       group.append(title);
+      // Advance disclosure only when a new latest turn appears, not on streamed updates.
+      const latestTurn = Math.max(-1, ...turns.keys());
+      if (item.turn > latestTurn) {
+        const previous = turns.get(latestTurn);
+        if (previous) previous.open = false;
+        group.open = true;
+      }
       turns.set(item.turn, group);
     }
     const summary = turnSummary(state, item.turn);

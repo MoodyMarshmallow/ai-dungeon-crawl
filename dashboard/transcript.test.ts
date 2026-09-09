@@ -2,6 +2,30 @@ import { expect, test } from "bun:test";
 import { shellTranscript, activityEntries, turnSummary } from "./transcript";
 import type { ModelRequest } from "./types";
 import type { Submission } from "./types";
+import { runInNewContext } from "node:vm";
+
+test("new latest turns open and collapse their predecessor without changing older choices", async () => {
+  const app = await Bun.file(new URL("./app.ts", import.meta.url)).text();
+  const registration = app.slice(app.indexOf("const latestTurn ="), app.indexOf("turns.set(item.turn, group);") + "turns.set(item.turn, group);".length);
+  const turns = new Map<number, { open: boolean }>();
+  const add = (turn: number) => {
+    const group = { open: false };
+    runInNewContext(registration, { turns, item: { turn }, group });
+    return group;
+  };
+  const first = add(0);
+  expect(first.open).toBe(true);
+  const second = add(1);
+  expect(first.open).toBe(false);
+  expect(second.open).toBe(true);
+  first.open = true;
+  const third = add(2);
+  expect(first.open).toBe(true);
+  expect(second.open).toBe(false);
+  expect(third.open).toBe(true);
+  expect(add(-1).open).toBe(false);
+  expect(third.open).toBe(true);
+});
 
 test("turn headings have a separate collapsed-only preview", async () => {
   const app = await Bun.file(new URL("./app.ts", import.meta.url)).text();
