@@ -143,8 +143,13 @@ button:focus-visible,
   padding: 18px;
 }
 #settings-form {
-  max-width: 440px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
+#settings-fields { max-width: 440px; }
+#save-defaults { align-self: flex-end; margin-top: auto; }
+#settings-status { padding-bottom: 14px; }
 #settings-fields {
   display: grid;
   grid-template-columns: minmax(110px, auto) minmax(0, 1fr);
@@ -212,10 +217,31 @@ button:focus-visible,
   margin-bottom: 0;
 }
 .turn-title {
-  margin: 0 0 16px;
+  display: flex;
+  align-items: baseline;
+  margin: 0;
+  cursor: pointer;
+  overflow-wrap: anywhere;
   color: #aaa7a1;
   font: 400 12px/1.5 "Plex Sans", sans-serif;
 }
+.turn-title::-webkit-details-marker { display: none; }
+.turn-title::before { content: "▸"; flex: none; margin-right: 3px; }
+.activity-turn[open] > .turn-title::before { content: "▾"; }
+.activity-turn[open] > .turn-title { margin-bottom: 16px; }
+.turn-number { white-space: nowrap; flex: none; }
+.turn-heading-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 8px;
+  color: var(--model);
+  font: 400 13px/1.7 "Plex Sans", sans-serif;
+}
+.turn-heading-preview:empty,
+.activity-turn[open] > .turn-title > .turn-heading-preview { display: none; }
+.turn-title:focus-visible { outline: 2px solid var(--return); outline-offset: 4px; }
 .model-part,
 .result {
   margin: 0 0 22px;
@@ -331,6 +357,22 @@ button:focus-visible,
   white-space: pre-wrap;
   padding-left: 12px;
   border-left: 2px solid #3e5667;
+}
+.observation-screen {
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
+  background: #000;
+  color: #dedbd4;
+  font: 12px/1.35 "Plex Mono", monospace;
+  font-variant-ligatures: none;
+}
+.observation-cell { display: inline-block; }
+.observation-cursor { box-shadow: inset 0 0 0 1px #dedbd4; }
+.observation-blink { animation: observation-blink 1s step-end infinite; }
+@keyframes observation-blink { 50% { color: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .observation-blink { animation: none; }
 }
 .controls {
   display: flex;

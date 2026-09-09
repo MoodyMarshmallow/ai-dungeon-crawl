@@ -136,6 +136,17 @@ test("viewer only inventories static renderer assets and has no input bridge", (
   expect(tilePage("", false)).toContain("Tiles unavailable");
 });
 
+test("tiles iframe loads eagerly and is never initialized by tab selection", async () => {
+  const html = await Bun.file(new URL("./index.html", import.meta.url)).text();
+  const app = await Bun.file(new URL("./app.ts", import.meta.url)).text();
+  const iframe = html.match(/<iframe\b[^>]*id="tiles-frame"[^>]*>/)?.[0];
+  expect(iframe).toBeDefined();
+  expect(iframe).toContain('src="/tiles/"');
+  expect(iframe).not.toContain('loading="lazy"');
+  expect(app).not.toContain('$("tiles-frame")');
+  expect(app).not.toContain('frame.src = "/tiles/"');
+});
+
 test("tiles use fixed-size text and an upstream-rendered read-only inventory", () => {
   expect(tileStyle).toContain("background:#000");
   expect(tileStyle).toContain("font-size:13px!important");

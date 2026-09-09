@@ -4,10 +4,12 @@ import { parseArgs } from "node:util";
 import type { Subprocess } from "bun";
 import type { Config, HarnessEvent } from "./types";
 import { reasoningEfforts } from "./types";
+import { loadDefaults, saveDefaults, type Settings } from "./defaults";
 import { applyEvent, emptyState } from "./state";
 import { TileJournal, tileAssets, tileEvents, tilePage, tileScript, tileStyle } from "./tiles";
 
 const root = resolve(import.meta.dir, "..");
+const defaultSettingsPath = resolve(root, ".dashboard-defaults.json");
 
 export class Dashboard {
   readonly tiles = new TileJournal();
@@ -161,7 +163,7 @@ export class Dashboard {
   }
 }
 
-export async function startServer(dashboard: Dashboard, port = 8765) {
+export async function startServer(dashboard: Dashboard, port = 8765, defaultsPath = defaultSettingsPath) {
   const build = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "app.ts")],
     target: "browser",
@@ -202,6 +204,16 @@ export async function startServer(dashboard: Dashboard, port = 8765) {
       if (request.method === "POST") {
         if (request.headers.get("X-Dashboard-Request") !== "1")
           return reply("Use dashboard controls", 403);
+        if (url.pathname === "/defaults") {
+          if (dashboard.active) return reply("An episode is already running", 409);
+          try {
+            const settings = saveDefaults(defaultsPath, await request.json());
+            dashboard.updateConfig(settings);
+            return reply(JSON.stringify(dashboard.config), 200, "application/json");
+          } catch (error) {
+            return reply(error instanceof Error ? error.message : "Unable to save defaults", 400);
+          }
+        }
         if (url.pathname === "/config") {
           if (dashboard.active)
             return reply("An episode is already running", 409);
@@ -340,15 +352,15 @@ export async function startServer(dashboard: Dashboard, port = 8765) {
   });
 }
 
-export function dashboardOptions(args: string[]) {
+export function dashboardOptions(args: string[], defaults?: Settings) {
   const { values } = parseArgs({
     args,
     options: {
       policy: { type: "string", default: "codex" },
       model: { type: "string" },
       port: { type: "string", default: "8765" },
-      "reasoning-effort": { type: "string", default: "default" },
-      "max-turns": { type: "string", default: "3" },
+      "reasoning-effort": { type: "string" },
+      "max-turns": { type: "string" },
       "reasoning-summary": { type: "boolean" },
       game: { type: "string", default: "dcss" },
       "crawl-path": { type: "string" },
@@ -356,10 +368,12 @@ export function dashboardOptions(args: string[]) {
     },
   });
   const backend = values.policy as Config["backend"];
-  const model = values.model ?? (backend === "codex" ? "gpt-5.6-luna" : null);
+  const saved = backend === "codex" ? defaults : undefined;
+  const model = values.model ?? saved?.model ?? (backend === "codex" ? "gpt-5.6-luna" : null);
   const port = Number(values.port),
-    max_turns = Number(values["max-turns"]);
-  const reasoning_effort = values["reasoning-effort"] as Config["reasoning_effort"];
+    max_turns = Number(values["max-turns"] ?? saved?.max_turns ?? 3);
+  const reasoning_effort = (values["reasoning-effort"] ?? saved?.reasoning_effort ??
+    (backend === "codex" ? "low" : "default")) as Config["reasoning_effort"];
   if (
     !["codex", "pydantic"].includes(backend) ||
     !["dcss", "mock"].includes(values.game!) ||
@@ -389,7 +403,7 @@ export function dashboardOptions(args: string[]) {
 }
 
 if (import.meta.main) {
-  const { config, port } = dashboardOptions(Bun.argv.slice(2));
+  const { config, port } = dashboardOptions(Bun.argv.slice(2), loadDefaults(defaultSettingsPath));
   const dashboard = new Dashboard(config);
   const server = await startServer(dashboard, port);
   console.log(

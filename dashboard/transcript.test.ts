@@ -1,6 +1,31 @@
 import { expect, test } from "bun:test";
-import { shellTranscript, activityEntries } from "./transcript";
+import { shellTranscript, activityEntries, turnSummary } from "./transcript";
+import type { ModelRequest } from "./types";
 import type { Submission } from "./types";
+
+test("turn headings have a separate collapsed-only preview", async () => {
+  const app = await Bun.file(new URL("./app.ts", import.meta.url)).text();
+  const css = await Bun.file(new URL("./style.css", import.meta.url)).text();
+  expect(app).toContain('number.className = "turn-number"');
+  expect(app).toContain('heading.className = "turn-heading-preview"');
+  expect(app).toContain('title.append(number, heading)');
+  expect(css).toContain('.activity-turn[open] > .turn-title > .turn-heading-preview { display: none; }');
+});
+
+test("turn summaries follow the first reasoning header and tolerate streaming", () => {
+  const model: ModelRequest = { id: 0, turn: 1, status: "running", tokens: null, parts: {} };
+  const state = { models: [model] };
+  expect(turnSummary(state, 1)).toBe("Turn 2");
+  model.parts[0] = { kind: "tool", name: "execute_shell", text: "not reasoning", truncated: false };
+  model.parts[1] = { kind: "reasoning", name: "", text: "\n**Searching manual for key play commands**\n\nBody", truncated: false };
+  model.parts[2] = { kind: "reasoning", name: "", text: "Later thought", truncated: false };
+  expect(turnSummary(state, 1)).toBe("Turn 2: Searching manual for key play commands");
+  expect(turnSummary(state, 0)).toBe("Turn 1");
+  model.parts[1].text = "## Searching";
+  expect(turnSummary(state, 1)).toBe("Turn 2: Searching");
+  model.parts[1].text = "**";
+  expect(turnSummary(state, 1)).toBe("Turn 2: Later thought");
+});
 const submission: Submission = {
   id: 0,
   code: "x = 1\nprint(x)",
@@ -109,7 +134,7 @@ test("shell pane exposes accessible next-run settings without a keypress limit",
   expect(pane).toContain('id="shell-tab" role="tab" aria-selected="true" aria-controls="shell-view"');
   expect(pane).toContain('id="settings-tab" role="tab" aria-selected="false" aria-controls="settings-view"');
   expect(pane).toContain('id="settings-view" role="tabpanel" aria-labelledby="settings-tab" aria-hidden="true" inert');
-  expect(pane).toContain('name="model" type="text"');
+  expect(pane).toContain('<select id="setting-model" name="model"');
   expect(pane).toContain('name="reasoning_effort"');
   expect(pane).toContain('name="max_turns" type="number" min="0"');
   expect(pane).not.toContain('max_steps');

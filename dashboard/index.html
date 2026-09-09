@@ -22,7 +22,7 @@
             <div id="screen" aria-label="Current game screen"></div>
           </div>
           <div id="tiles" role="tabpanel" aria-labelledby="tiles-tab" aria-hidden="true">
-            <iframe id="tiles-frame" title="Current game tiles, read only" sandbox="allow-scripts allow-same-origin" tabindex="-1"></iframe>
+            <iframe id="tiles-frame" src="/tiles/" title="Current game tiles, read only" sandbox="allow-scripts allow-same-origin" tabindex="-1"></iframe>
           </div>
           </div>
         </section>
@@ -47,13 +47,16 @@
               <form id="settings-form">
                 <fieldset id="settings-fields" disabled>
                   <label for="setting-model">Model</label>
-                  <input id="setting-model" name="model" type="text" autocomplete="off" spellcheck="false" placeholder="Provider default" />
+                  <select id="setting-model" name="model" required>
+                    <option value="gpt-5.6-luna">Luna</option>
+                    <option value="gpt-5.6-terra">Terra</option>
+                    <option value="gpt-5.6-sol">Sol</option>
+                  </select>
                   <label for="setting-reasoning">Reasoning strength</label>
                   <select id="setting-reasoning" name="reasoning_effort">
-                    <option value="default">Default</option>
                     <option value="none">None</option>
                     <option value="minimal">Minimal</option>
-                    <option value="low">Low</option>
+                    <option value="low" selected>Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
                     <option value="xhigh">Extra high</option>
@@ -62,6 +65,7 @@
                   <input id="setting-turns" name="max_turns" type="number" min="0" max="9007199254740991" step="1" required />
                 </fieldset>
                 <p id="settings-status" role="status">Applies when you press Start.</p>
+                <button id="save-defaults" type="button" disabled>Save as default</button>
               </form>
             </div>
           </div>

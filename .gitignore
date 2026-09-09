@@ -13,3 +13,6 @@ dashboard/node_modules/
 
 # Isolated DCSS saves and episode logs
 runs/
+
+# Local dashboard preferences
+.dashboard-defaults.json*

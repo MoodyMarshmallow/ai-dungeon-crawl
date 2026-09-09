@@ -1,6 +1,21 @@
 import type { State, Submission } from "./types";
 import { shellAnsi, terminalText } from "./rendering";
 
+/** Use the first available reasoning line without including later thoughts or tool calls. */
+export function turnSummary(state: Pick<State, "models">, turn: number): string {
+  for (const model of state.models.filter(model => model.turn === turn)) {
+    for (const part of Object.values(model.parts)) {
+      if (part.kind !== "reasoning") continue;
+      const first = part.text.split(/\r?\n/).find(line => line.trim());
+      if (!first) continue;
+      const heading = first.trim().replace(/^#{1,6}\s+/, "")
+        .replace(/\s+#+$/, "").replace(/[*_`]/g, "").trim();
+      if (heading) return `Turn ${turn + 1}: ${heading}`;
+    }
+  }
+  return `Turn ${turn + 1}`;
+}
+
 /** Render submitted shell commands and their live output as a read-only transcript. */
 export function shellTranscript(
   submissions: Submission[],

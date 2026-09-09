@@ -1,7 +1,8 @@
 import type { State } from "./types";
 import { TerminalDisplay } from "./displays";
-import { activityEntries } from "./transcript";
+import { activityEntries, turnSummary } from "./transcript";
 import { codeHtml, markdownHtml } from "./rendering";
+import { executionOutputHtml } from "./observation-output";
 
 const $ = (id: string) => document.getElementById(id)!;
 const button = (id: string) => $(id) as HTMLButtonElement;
@@ -16,7 +17,7 @@ let lastRun: number | null = null;
 let settingsDirty = false;
 let savedSettings: State["config"] | null = null;
 const settingsForm = $("settings-form") as HTMLFormElement;
-const modelInput = $("setting-model") as HTMLInputElement;
+const modelInput = $("setting-model") as HTMLSelectElement;
 const reasoningInput = $("setting-reasoning") as HTMLSelectElement;
 const turnsInput = $("setting-turns") as HTMLInputElement;
 
@@ -29,9 +30,13 @@ function syncSettings(state: State) {
     savedSettings = null;
   }
   if (settingsDirty) return;
+  // Preserve explicit CLI model overrides without adding an editable model field.
+  if (state.config.model && !Array.from(modelInput.options).some(option => option.value === state.config.model))
+    modelInput.add(new Option(state.config.model, state.config.model));
   modelInput.value = state.config.model ?? "";
-  reasoningInput.value = state.config.reasoning_effort;
+  reasoningInput.value = state.config.reasoning_effort === "default" ? "low" : state.config.reasoning_effort;
   turnsInput.value = String(state.config.max_turns);
+  if (state.config.reasoning_effort === "default") settingsDirty = true;
 }
 settingsForm.addEventListener("input", () => {
   settingsDirty = true;
@@ -52,6 +57,7 @@ function controls() {
   text($("status"), !connected ? "Reconnecting…" : "");
   ($("settings-fields") as HTMLFieldSetElement).disabled =
     !connected || pending || current?.status === "running";
+  button("save-defaults").disabled = !connected || pending || current?.status === "running";
 }
 
 function render(state: State) {
@@ -87,16 +93,25 @@ function render(state: State) {
   for (const item of items) {
     let group = turns.get(item.turn);
     if (!group) {
-      group = document.createElement("section");
+      group = document.createElement("details");
       group.className = "activity-turn";
-      const title = document.createElement("h2");
+      const title = document.createElement("summary");
       title.className = "turn-title";
       title.id = `turn-${item.turn}`;
-      title.textContent = `Turn ${item.turn + 1}`;
+      const number = document.createElement("span");
+      number.className = "turn-number";
+      number.textContent = `Turn ${item.turn + 1}`;
+      const heading = document.createElement("span");
+      heading.className = "turn-heading-preview";
+      title.append(number, heading);
       group.setAttribute("aria-labelledby", title.id);
       group.append(title);
       turns.set(item.turn, group);
     }
+    const summary = turnSummary(state, item.turn);
+    const heading = group.querySelector<HTMLElement>(".turn-heading-preview")!;
+    text(heading, summary.startsWith(`Turn ${item.turn + 1}: `)
+      ? summary.slice(`Turn ${item.turn + 1}: `.length) : "");
     if (previousTurn !== group) {
       const next: ChildNode | null = previousTurn ? previousTurn.nextSibling : $("activity").firstChild;
       if (next !== group) $("activity").insertBefore(group, next);
@@ -134,7 +149,7 @@ function render(state: State) {
           element.append(summary, output);
         }
         // Retain disclosure state and keyboard focus while output streams.
-        text(element.lastElementChild as HTMLElement, item.text);
+        (element.lastElementChild as HTMLElement).innerHTML = executionOutputHtml(item.text);
       } else if (item.format === "text") text(element, item.text);
       else
         element.innerHTML =
@@ -158,7 +173,7 @@ function render(state: State) {
 }
 
 async function command(path: string) {
-  if (path === "/run" && settingsDirty && !settingsForm.checkValidity()) {
+  if ((path === "/defaults" || (path === "/run" && settingsDirty)) && !settingsForm.checkValidity()) {
     selectShellView("settings");
     settingsForm.reportValidity();
     return;
@@ -166,6 +181,19 @@ async function command(path: string) {
   pending = true;
   controls();
   try {
+    if (path === "/defaults") {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "X-Dashboard-Request": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelInput.value, reasoning_effort: reasoningInput.value,
+          max_turns: Number(turnsInput.value) }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      savedSettings = await response.json();
+      if (current) syncSettings(current);
+      text($("settings-status"), "Default saved.");
+      return;
+    }
     if (path === "/run" && settingsDirty) {
       const response = await fetch("/config", {
         method: "POST",
@@ -197,6 +225,7 @@ async function command(path: string) {
 }
 $("start").addEventListener("click", () => command("/run"));
 $("stop").addEventListener("click", () => command("/stop"));
+$("save-defaults").addEventListener("click", () => command("/defaults"));
 
 function selectShellView(view: "shell" | "settings") {
   for (const name of ["shell", "settings"]) {
@@ -226,8 +255,6 @@ function selectView(view: "terminal" | "tiles") {
     button(`${name}-tab`).tabIndex = selected ? 0 : -1;
     $(name).setAttribute("aria-hidden", String(!selected));
   }
-  const frame = $("tiles-frame") as HTMLIFrameElement;
-  if (view === "tiles" && !frame.getAttribute("src")) frame.src = "/tiles/";
 }
 for (const view of ["terminal", "tiles"] as const) {
   button(`${view}-tab`).addEventListener("click", () => selectView(view));
