@@ -1,12 +1,13 @@
 import argparse
 import asyncio
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .mock_game import MockGameSession
+from .game.mock_game import MockGameSession
 from .episode import EpisodeRunner
-from .policies import REASONING_EFFORTS, create_policy
+from .agent.policies import REASONING_EFFORTS, create_policy
 from .events import emit, observe_events
 from .run_log import episode_log
 
@@ -35,7 +36,7 @@ def create_game(game: str, crawl_path: Path = DEFAULT_CRAWL_PATH, *, save_dir: P
         return MockGameSession()
     if game != "dcss":
         raise ValueError(f"Unknown game: {game}")
-    from .dcss import DCSSGameSession
+    from .game.dcss import DCSSGameSession
     executable = Path(crawl_path).expanduser().resolve()
     if not executable.is_file():
         raise FileNotFoundError("DCSS build missing; run the DCSS build helper or pass --crawl-path")
@@ -47,7 +48,9 @@ def create_game(game: str, crawl_path: Path = DEFAULT_CRAWL_PATH, *, save_dir: P
 
 
 def new_run_directory() -> Path:
-    return Path(__file__).resolve().parents[2] / "runs" / uuid4().hex
+    """Name runs chronologically in UTC, with a random suffix for uniqueness."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S.%fZ")
+    return Path(__file__).resolve().parents[2] / "runs" / f"{timestamp}_{uuid4().hex}"
 
 
 async def run_episode(backend: str, model: str | None, max_turns: int,

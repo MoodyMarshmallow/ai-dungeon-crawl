@@ -1,4 +1,4 @@
-from .contracts import GameAction, GameObservation
+from ..contracts import GameAction, GameObservation
 
 
 class MockGameSession:

@@ -9,9 +9,9 @@ from pydantic_ai.models import Model
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.usage import UsageLimits
 
-from .contracts import AgentTurn, GameObservation, Policy, AgentTurnRecord, validate_source
-from .events import events_enabled
-from .observation_json import observation_data
+from ..contracts import AgentTurn, GameObservation, Policy, AgentTurnRecord, validate_source
+from ..events import events_enabled
+from ..game.observation_json import observation_data
 
 REASONING_EFFORTS = ("default", "none", "minimal", "low", "medium", "high", "xhigh")
 
@@ -27,6 +27,9 @@ executes it once and returns output and the final screen automatically.
 Each call starts a fresh shell in the same workspace; files persist, variables
 and cwd changes do not. Python and standard text tools are available. Execution
 and output are bounded; network and personal-file access are blocked.
+Optional timeout_ms sets the execution budget in milliseconds (1–180000).
+Omit it or use null for the configured default (normally 5000 ms).
+Time waiting for game keypress readiness does not consume this budget.
 
 Commands:
 - crawl press KEY: send one key, wait for readiness; silent on success.
@@ -49,6 +52,8 @@ class ShellScript(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     code: str = Field(min_length=1, max_length=65536,
                       description="Bash script, at most 64 KiB UTF-8.")
+    timeout_ms: int | None = Field(default=None, ge=1, le=180000,
+                                  description="Execution timeout in milliseconds; null uses the configured default (normally 5000). Maximum 180000.")
 
     @field_validator("code")
     @classmethod
@@ -68,7 +73,7 @@ def _prompt(observation: GameObservation, history: tuple[AgentTurnRecord, ...], 
         raise ValueError("Current observation and goal exceed the context budget")
     for record in reversed(history[-history_turns:] if history_turns else ()):
         entry = {
-            "id": record.id, "code": record.turn.code,
+            "id": record.id, "code": record.turn.code, "timeout_ms": record.turn.timeout_ms,
             "execution": asdict(record.execution),
             "executed_keys": [step.action.key for step in record.steps],
         }
@@ -147,7 +152,8 @@ class PydanticPolicy:
         calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
         if len(calls) != 1 or calls[0].tool_name != "execute_shell":
             raise ValueError("An agent turn must submit exactly one execute_shell tool call")
-        return AgentTurn(result.output.code, model_requests=result.usage.requests)
+        return AgentTurn(result.output.code, model_requests=result.usage.requests,
+                         timeout_ms=result.output.timeout_ms)
 
 
 class CodexPolicy(PydanticPolicy):

@@ -10,7 +10,7 @@ import httpx2
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from ai_dungeon_crawl.contracts import GameObservation
-from ai_dungeon_crawl.policies import CodexPolicy
+from ai_dungeon_crawl.agent.policies import CodexPolicy
 from ai_dungeon_crawl.events import observe_events
 
 

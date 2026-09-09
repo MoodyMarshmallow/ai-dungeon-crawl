@@ -8,10 +8,10 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.function import FunctionModel, DeltaToolCall, DeltaThinkingPart
 
 from ai_dungeon_crawl.contracts import GameObservation
-from ai_dungeon_crawl.mock_game import MockGameSession
+from ai_dungeon_crawl.game.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
 from ai_dungeon_crawl.events import observe_events
-from ai_dungeon_crawl.policies import PydanticPolicy
+from ai_dungeon_crawl.agent.policies import PydanticPolicy
 
 
 class StreamingTests(unittest.IsolatedAsyncioTestCase):

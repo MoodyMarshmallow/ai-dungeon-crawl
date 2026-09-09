@@ -92,6 +92,12 @@ def validate_source(code: str) -> None:
         raise ValueError("Code must be text of at most 64 KiB")
 
 
+def validate_timeout_ms(value: Optional[int]) -> None:
+    """Allow the configured default or a bounded integer execution budget."""
+    if value is not None and (type(value) is not int or not 1 <= value <= 180000):
+        raise ValueError("timeout_ms must be an integer from 1 to 180000, or None")
+
+
 class StopExecution(Exception):
     """Abort the current submitted script after a harness limit is reached."""
 
@@ -111,11 +117,13 @@ class AgentTurn:
 
     code: str
     model_requests: Optional[int] = 0
+    timeout_ms: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.model_requests is not None and self.model_requests < 0:
             raise ValueError("model_requests cannot be negative")
         validate_source(self.code)
+        validate_timeout_ms(self.timeout_ms)
 
 
 @dataclass(frozen=True)

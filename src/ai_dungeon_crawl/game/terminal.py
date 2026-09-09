@@ -1,6 +1,6 @@
 import pyte
 
-from .contracts import GameObservation, ScreenStyle
+from ..contracts import GameObservation, ScreenStyle
 
 
 class TerminalScreen:

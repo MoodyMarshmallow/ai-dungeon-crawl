@@ -7,7 +7,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from .events import emit
+from ..events import emit
 
 
 class ObservedModel(WrapperModel):

@@ -9,8 +9,8 @@ from ai_dungeon_crawl.contracts import (
     GameAction,
     ScreenStyle,
 )
-from ai_dungeon_crawl.policies import _prompt
-from ai_dungeon_crawl.observation_json import observation_data
+from ai_dungeon_crawl.agent.policies import _prompt
+from ai_dungeon_crawl.game.observation_json import observation_data
 
 
 class ScreenObservationTests(unittest.TestCase):

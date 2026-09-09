@@ -3,7 +3,7 @@ import json
 
 from wcwidth import wcwidth
 
-from .contracts import GameObservation
+from ..contracts import GameObservation
 
 
 def observation_data(observation: GameObservation) -> dict:

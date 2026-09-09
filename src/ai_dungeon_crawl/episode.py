@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from .contracts import GameEpisodeResult, GameSession, Policy, GameStep, AgentTurnRecord, StopExecution
-from .shell import ShellTerminal
+from .shell.terminal import ShellTerminal
 from .events import emit
 
 
@@ -44,10 +44,12 @@ class EpisodeRunner:
             while not observation.ended and len(turns) < max_turns:
                 emit("turn.started", id=len(turns))
                 turn = await self._policy.request_turn(observation, tuple(turns))
-                emit("execution.submitted", id=len(turns), code=turn.code, model_requests=turn.model_requests)
+                emit("execution.submitted", id=len(turns), code=turn.code,
+                     model_requests=turn.model_requests, timeout_ms=turn.timeout_ms)
                 first_step = len(steps)
                 try:
-                    execution = await self._terminal.execute_shell(turn.code, observation, press)
+                    execution = await self._terminal.execute_shell(
+                        turn.code, observation, press, timeout_ms=turn.timeout_ms)
                 except BaseException as exc:
                     emit("execution.interrupted", id=len(turns),
                          error="cancelled" if isinstance(exc, asyncio.CancelledError) else type(exc).__name__)

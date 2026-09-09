@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import stat
@@ -8,13 +9,25 @@ from unittest.mock import patch
 
 from pydantic_ai.models.function import FunctionModel, DeltaThinkingPart, DeltaToolCall
 
-from ai_dungeon_crawl.cli import run_episode
+from ai_dungeon_crawl.cli import run_episode, new_run_directory
 from ai_dungeon_crawl.events import emit, events_enabled, observe_events, record_events
-from ai_dungeon_crawl.policies import PydanticPolicy
+from ai_dungeon_crawl.agent.policies import PydanticPolicy
 from ai_dungeon_crawl.run_log import episode_log
 
 
 class RunLogTests(unittest.TestCase):
+    def test_run_names_sort_by_utc_time_and_remain_unique(self):
+        with patch("ai_dungeon_crawl.cli.datetime") as clock:
+            clock.now.return_value = datetime(2026, 9, 9, 14, 30, 0, 123456, tzinfo=timezone.utc)
+            first, same_time = new_run_directory(), new_run_directory()
+            clock.now.assert_called_with(timezone.utc)
+            clock.now.return_value = datetime(2026, 9, 10, tzinfo=timezone.utc)
+            later = new_run_directory()
+        self.assertRegex(first.name, r"^2026-09-09T14-30-00\.123456Z_[0-9a-f]{32}$")
+        self.assertNotEqual(first, same_time)
+        self.assertLess(first.name, later.name)
+        self.assertEqual(first.parent.name, "runs")
+
     def test_flush_correlation_permissions_and_no_overwrite(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "one"

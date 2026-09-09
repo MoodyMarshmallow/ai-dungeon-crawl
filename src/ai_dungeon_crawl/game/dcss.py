@@ -13,7 +13,7 @@ import tempfile
 import termios
 from typing import Callable, Sequence
 
-from .contracts import GameAction, GameObservation
+from ..contracts import GameAction, GameObservation
 from .terminal import BoundaryDecoder, TerminalScreen
 
 

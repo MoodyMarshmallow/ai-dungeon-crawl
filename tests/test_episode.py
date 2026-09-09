@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import patch
 
 from ai_dungeon_crawl.contracts import GameAction, AgentTurn, GameObservation
-from ai_dungeon_crawl.mock_game import MockGameSession
+from ai_dungeon_crawl.game.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
-from ai_dungeon_crawl.shell import ShellTerminal
+from ai_dungeon_crawl.shell.terminal import ShellTerminal
 
 
 class CodePolicy:
@@ -25,6 +25,15 @@ class CodePolicy:
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("sandbox-exec"),
                      "Shell integration requires macOS sandbox-exec")
 class EpisodeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forwards_submission_timeout(self):
+        class TimeoutPolicy:
+            async def request_turn(self, observation, history):
+                return AgentTurn('sleep 0.4; echo finished', timeout_ms=2000)
+        terminal = ShellTerminal(timeout_seconds=0.1)
+        result = await EpisodeRunner(MockGameSession(), TimeoutPolicy(), terminal).run(max_turns=1)
+        self.assertEqual(result.turns[0].execution.status, 'ok')
+        self.assertEqual(result.turns[0].turn.timeout_ms, 2000)
+
     async def test_records_each_transition_and_closes_on_exit(self):
         game = MockGameSession()
         result = await EpisodeRunner(game, CodePolicy(
@@ -246,7 +255,7 @@ class ContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_platform_fails_closed(self):
         terminal = ShellTerminal()
-        with patch("ai_dungeon_crawl.shell.sys.platform", "unsupported"):
+        with patch("ai_dungeon_crawl.shell.terminal.sys.platform", "unsupported"):
             with self.assertRaisesRegex(RuntimeError, "no unsafe fallback"):
                 await terminal.execute_shell(":", GameObservation(0, ""), MockGameSession().step)
 

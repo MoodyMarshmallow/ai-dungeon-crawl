@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_dungeon_crawl.manual import (
+from ai_dungeon_crawl.shell.manual import (
     MANUAL_FILENAME,
     PROVENANCE_FILENAME,
     prepare_manual,

@@ -10,22 +10,22 @@ import unittest
 from unittest.mock import patch
 
 from ai_dungeon_crawl.contracts import GameObservation, ScreenStyle, StopExecution
-from ai_dungeon_crawl.shell import ShellTerminal
-from ai_dungeon_crawl.observation_json import observation_data
+from ai_dungeon_crawl.shell.terminal import ShellTerminal
+from ai_dungeon_crawl.game.observation_json import observation_data
 
 
 class ShellValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsupported_platform_fails_closed(self):
         terminal = ShellTerminal()
-        with patch('ai_dungeon_crawl.shell.sys.platform', 'linux'):
+        with patch('ai_dungeon_crawl.shell.terminal.sys.platform', 'linux'):
             with self.assertRaisesRegex(RuntimeError, 'no unsafe fallback'):
                 await terminal.execute_shell('echo unsafe', GameObservation(0, ''), None)
         self.assertIsNone(terminal._process)
 
     async def test_failed_manual_setup_preserves_error_and_cleans_workspace(self):
         terminal = ShellTerminal(manual_path='/nonexistent/crawl-test-manual')
-        with patch('ai_dungeon_crawl.shell.sys.platform', 'darwin'), patch(
-                'ai_dungeon_crawl.shell.shutil.which', return_value='/usr/bin/sandbox-exec'):
+        with patch('ai_dungeon_crawl.shell.terminal.sys.platform', 'darwin'), patch(
+                'ai_dungeon_crawl.shell.terminal.shutil.which', return_value='/usr/bin/sandbox-exec'):
             with self.assertRaises(FileNotFoundError):
                 await terminal.execute_shell('echo unsafe', GameObservation(0, ''), None)
         self.assertIsNone(terminal._directory)
@@ -49,6 +49,26 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
 
     async def run_code(self, code):
         return await self.terminal.execute_shell(code, self.observation, self.press)
+
+    async def test_early_pipeline_reader_exit_is_quiet(self):
+        result = await self.run_code(
+            "python -c 'print(\"match\\n\" * 100000)' > matches.txt\n"
+            "grep match matches.txt | head -1")
+        self.assertEqual(result.status, 'ok')
+        self.assertEqual(result.output, 'match\n')
+
+
+    async def test_timeout_override_is_per_submission(self):
+        self.terminal.timeout_seconds = 0.1
+        code = 'sleep 0.4; echo finished'
+        result = await self.terminal.execute_shell(code, self.observation, self.press, timeout_ms=2000)
+        self.assertEqual(result.status, 'ok')
+        self.assertIn('finished', result.output)
+        result = await self.run_code(code)
+        self.assertEqual(result.status, 'timeout')
+        result = await self.terminal.execute_shell('echo recovered', self.observation, self.press, timeout_ms=2000)
+        self.assertEqual(result.status, 'ok')
+
 
     async def test_cli_preserves_metadata_and_actions(self):
         result = await self.run_code('crawl observe; crawl press l; crawl observe')

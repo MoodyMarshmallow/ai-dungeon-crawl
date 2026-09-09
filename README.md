@@ -31,7 +31,7 @@ bun run dev
 
 - `dashboard/` — TypeScript/Bun dashboard for the game screen, model activity, and shell output.
 - `src/ai_dungeon_crawl/` — Python agent loop and isolated shell execution; currently macOS-only. Each submission starts in the same episode workspace; files persist, shell variables and directory changes do not.
-- `shell.py` — macOS filesystem/network sandbox with scrubbed credentials and bounded execution. Directory changes never persist between submissions. Process-detaching/spawn APIs are blocked, so some utilities may not work. Limits are per process/file, not aggregate memory/disk quotas; this is local-development isolation, not a hardened multi-tenant sandbox.
-- `policies.py` / `codex.py` — Model integration, using a Codex subscription by default; PydanticAI API backends are also available.
-- `dcss.py` / `terminal.py` — Real game process and full terminal observations with colors; `--game mock` retains the test game.
+- `src/ai_dungeon_crawl/shell/` — macOS filesystem/network sandbox, game CLI, and local manual. Credentials are scrubbed and execution is bounded. Directory changes never persist between submissions. Process-detaching/spawn APIs are blocked, so some utilities may not work. Limits are per process/file, not aggregate memory/disk quotas; this is local-development isolation, not a hardened multi-tenant sandbox.
+- `src/ai_dungeon_crawl/agent/` — Model integration and streaming, using a Codex subscription by default; PydanticAI API backends are also available.
+- `src/ai_dungeon_crawl/game/` — Real game process and full terminal observations with colors; `--game mock` retains the test game.
 - `scripts/build_dcss.py` — Builds a separate WebTiles executable with an opt-in input-readiness patch; existing game binaries are kept.

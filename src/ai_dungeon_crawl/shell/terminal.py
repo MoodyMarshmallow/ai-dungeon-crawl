@@ -10,9 +10,9 @@ import subprocess
 import sys
 import tempfile
 
-from .contracts import ExecutionResult, GameAction, validate_source, StopExecution
-from .events import emit_output
-from .observation_json import observation_data
+from ..contracts import ExecutionResult, GameAction, validate_source, validate_timeout_ms, StopExecution
+from ..events import emit_output
+from ..game.observation_json import observation_data
 
 
 class ShellTerminal:
@@ -113,8 +113,10 @@ class ShellTerminal:
             environment['CRAWL_MANUAL'] = str(self.manual_path)
         return sandbox, profile, executable, launcher, environment
 
-    async def execute_shell(self, code, observation, press):
+    async def execute_shell(self, code, observation, press, *, timeout_ms=None):
         validate_source(code)
+        validate_timeout_ms(timeout_ms)
+        timeout_seconds = self.timeout_seconds if timeout_ms is None else timeout_ms / 1000
         if '\0' in code:
             raise ValueError('Shell source cannot contain NUL')
         if self._busy:
@@ -125,7 +127,7 @@ class ShellTerminal:
         loop = asyncio.get_running_loop()
         fatal = loop.create_future()
         lock = asyncio.Lock()
-        deadline = loop.time() + self.timeout_seconds
+        deadline = loop.time() + timeout_seconds
         in_action = False
         accepting = True
 
@@ -202,13 +204,14 @@ class ShellTerminal:
             self._server = await asyncio.start_unix_server(serve, path=self._socket, limit=1024)
             self._process = await asyncio.create_subprocess_exec(
                 sandbox, '-p', profile, executable, '-I', '-S', '-B', launcher, code, str(process_limit),
+                str(max(30, math.ceil(timeout_seconds))),
                 cwd=self.workspace, env=environment, start_new_session=True,
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE)
             readers = [asyncio.create_task(collect(stream, name))
                        for stream, name in ((self._process.stdout, 'stdout'),
                                             (self._process.stderr, 'stderr'))]
-            deadline = loop.time() + self.timeout_seconds
+            deadline = loop.time() + timeout_seconds
             while self._process.returncode is None or in_action:
                 if fatal.done():
                     raise fatal.result()

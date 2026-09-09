@@ -5,7 +5,7 @@ import os
 import signal
 
 from .cli import add_game_arguments, run_episode
-from .policies import REASONING_EFFORTS
+from .agent.policies import REASONING_EFFORTS
 
 
 def publish(event, data):

@@ -5,7 +5,7 @@ from dataclasses import asdict
 from wcwidth import wcswidth
 
 from ai_dungeon_crawl.contracts import GameObservation, ScreenStyle
-from ai_dungeon_crawl.observation_json import observation_data, format_observation
+from ai_dungeon_crawl.game.observation_json import observation_data, format_observation
 
 
 class ObservationJsonTests(unittest.TestCase):

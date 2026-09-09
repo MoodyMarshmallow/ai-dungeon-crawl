@@ -2,11 +2,20 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from ai_dungeon_crawl.contracts import AgentTurn, GameObservation, validate_source
-from ai_dungeon_crawl.policies import ShellScript
-from ai_dungeon_crawl.shell import ShellTerminal
+from ai_dungeon_crawl.agent.policies import ShellScript
+from ai_dungeon_crawl.shell.terminal import ShellTerminal
 
 
 class SourceValidationTests(unittest.TestCase):
+    def test_timeout_bounds_and_default(self):
+        for model in (AgentTurn, ShellScript):
+            self.assertIsNone(model(code=":").timeout_ms)
+            for value in (None, 1, 5000, 180000):
+                self.assertEqual(model(code=":", timeout_ms=value).timeout_ms, value)
+            for value in (0, -1, 180001, True, 1.5, "5000"):
+                with self.subTest(model=model, value=value), self.assertRaises(ValueError):
+                    model(code=":", timeout_ms=value)
+
     def test_accepts_empty_source_and_does_not_check_syntax(self):
         for code in ("", "pass", "for", "x" * 65536, "é" * 32768):
             with self.subTest(code_length=len(code)):
@@ -27,6 +36,15 @@ class SourceValidationTests(unittest.TestCase):
 
 
 class ShellValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_timeout_is_rejected_before_starting_worker(self):
+        terminal = ShellTerminal()
+        with patch.object(terminal, "_prepare") as prepare:
+            for value in (0, 180001, True, "5000"):
+                with self.assertRaises(ValueError):
+                    await terminal.execute_shell(":", GameObservation(0, ""), None, timeout_ms=value)
+            prepare.assert_not_called()
+        await terminal.close()
+
     async def test_invalid_source_is_rejected_before_starting_worker(self):
         terminal = ShellTerminal()
         press = AsyncMock()

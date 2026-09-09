@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 from ai_dungeon_crawl.cli import DEFAULT_CRAWL_PATH, add_game_arguments, create_game
-from ai_dungeon_crawl.mock_game import MockGameSession
+from ai_dungeon_crawl.game.mock_game import MockGameSession
 
 
 class GameSelectionTests(unittest.TestCase):

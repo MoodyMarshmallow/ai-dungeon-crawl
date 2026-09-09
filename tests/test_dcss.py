@@ -8,8 +8,8 @@ from unittest.mock import patch
 from unittest.mock import AsyncMock, Mock
 
 from ai_dungeon_crawl.contracts import GameAction
-from ai_dungeon_crawl.dcss import DCSSGameSession, key_bytes
-from ai_dungeon_crawl.terminal import BoundaryDecoder, TerminalScreen
+from ai_dungeon_crawl.game.dcss import DCSSGameSession, key_bytes
+from ai_dungeon_crawl.game.terminal import BoundaryDecoder, TerminalScreen
 
 
 class TerminalTests(unittest.TestCase):
@@ -68,8 +68,8 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             overrides = ("-name", "TransportTest", "-background", "Fighter")
             session = DCSSGameSession("/no/game", save_dir=directory, extra_args=overrides)
-            with patch("ai_dungeon_crawl.dcss.socket.socket.bind"), patch(
-                "ai_dungeon_crawl.dcss.asyncio.create_subprocess_exec",
+            with patch("ai_dungeon_crawl.game.dcss.socket.socket.bind"), patch(
+                "ai_dungeon_crawl.game.dcss.asyncio.create_subprocess_exec",
                 new_callable=AsyncMock, side_effect=FileNotFoundError,
             ) as spawn:
                 try:
@@ -102,7 +102,7 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
         session = DCSSGameSession("/no/game", readiness_timeout=0.01)
         session._started = True
         session._master = 999
-        with patch("ai_dungeon_crawl.dcss.os.write", return_value=1) as write:
+        with patch("ai_dungeon_crawl.game.dcss.os.write", return_value=1) as write:
             with self.assertRaisesRegex(TimeoutError, "never retried"):
                 await session.step(GameAction("l"))
             with self.assertRaisesRegex(RuntimeError, "not accepting"):

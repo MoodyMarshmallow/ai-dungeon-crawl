@@ -14,10 +14,10 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ai_dungeon_crawl.contracts import GameAction, ExecutionResult, AgentTurn, GameObservation, GameStep, AgentTurnRecord
-from ai_dungeon_crawl.policies import CodexPolicy, PydanticPolicy, create_policy, SHELL_DESCRIPTION, INSTRUCTIONS
-from ai_dungeon_crawl.mock_game import MockGameSession
+from ai_dungeon_crawl.agent.policies import CodexPolicy, PydanticPolicy, create_policy, SHELL_DESCRIPTION, INSTRUCTIONS
+from ai_dungeon_crawl.game.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
-from ai_dungeon_crawl.observation_json import observation_data
+from ai_dungeon_crawl.game.observation_json import observation_data
 
 
 OBSERVATION = GameObservation(0, "######\n#@...#\n######")
@@ -28,6 +28,14 @@ def response(code='await press("l")'):
 
 
 class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_output_tool_preserves_timeout(self):
+        def model(messages, info):
+            schema = info.output_tools[0].parameters_json_schema["properties"]["timeout_ms"]
+            self.assertIn('180000', json.dumps(schema))
+            return ModelResponse(parts=[ToolCallPart("execute_shell", {"code": ":", "timeout_ms": 120000})])
+        turn = await PydanticPolicy(FunctionModel(model)).request_turn(OBSERVATION, ())
+        self.assertEqual(turn.timeout_ms, 120000)
+
     def test_explicit_reasoning_rejects_other_providers(self):
         with self.assertRaisesRegex(ValueError, "requires a Codex or OpenAI"):
             create_policy("pydantic", model="anthropic:example", reasoning_effort="high")
