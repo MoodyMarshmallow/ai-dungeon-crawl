@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from ai_dungeon_crawl.contracts import GameObservation, ScreenStyle, StopExecution
 from ai_dungeon_crawl.shell import ShellTerminal
+from ai_dungeon_crawl.observation_json import observation_data
 
 
 class ShellValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -50,22 +51,26 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         return await self.terminal.execute_shell(code, self.observation, self.press)
 
     async def test_cli_preserves_metadata_and_actions(self):
-        result = await self.run_code('crawl observe --json; crawl press l; crawl observe --json')
+        result = await self.run_code('crawl observe; crawl press l; crawl observe')
         first, second = map(json.loads, result.output.splitlines())
-        self.assertEqual(first['screen'], self.observation.screen)
-        self.assertNotIn('text_runs', first)
-        self.assertEqual(first['cursor'], [1, 2])
-        self.assertEqual(first['style_palette'][0]['fg'], 'red')
+        self.assertEqual(first, observation_data(self.observation))
         self.assertEqual(second['id'], 2)
         self.assertEqual(self.keys, ['l'])
         self.assertEqual(result.observation.id, 2)
 
-    async def test_plain_cli_screen_remains_unchanged(self):
+    async def test_default_cli_returns_full_json_for_standard_terminal(self):
+        self.observation = GameObservation(1, '\n'.join([' ' * 100] * 30),
+            width=100, height=30, styles=(ScreenStyle(29, 0, 100, fg='red'),), cursor=(29, 99))
         result = await self.run_code('crawl observe')
-        screen, metadata = result.output.rsplit('\n\n', 1)
-        self.assertEqual(screen, self.observation.screen)
-        self.assertEqual(json.loads(metadata)['cursor'], [1, 2])
-        self.assertNotIn('screen', json.loads(metadata))
+        self.assertEqual(json.loads(result.output), observation_data(self.observation))
+        self.assertFalse(result.output_truncated)
+        self.assertEqual(len(result.output.splitlines()), 1)
+
+    async def test_observe_rejects_removed_json_option(self):
+        result = await self.run_code('crawl observe --json')
+        self.assertNotEqual(result.status, 'ok')
+        self.assertIn('usage:', result.output)
+        self.assertEqual(self.keys, [])
 
     async def test_keypress_is_silent_and_still_updates_observation(self):
         result = await self.run_code('crawl press l; crawl press l')
@@ -241,7 +246,7 @@ for request in requests:
         with connection.makefile('rb') as reader:
             print('error' in json.loads(reader.readline()))
 PY
-crawl observe --json''')
+crawl observe''')
         self.assertEqual(result.status, 'ok')
         self.assertEqual(result.output.splitlines()[:3], ['True'] * 3)
         self.assertEqual(self.keys, [])

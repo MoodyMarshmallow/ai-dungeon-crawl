@@ -44,7 +44,7 @@ class RunLogTests(unittest.TestCase):
 
 class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_reasoning_tools_and_full_output_survive_preview_limits(self):
-        code = "python -c 'import sys; print(\"x\" * 12000); print(\"stderr marker\", file=sys.stderr)'\ncrawl press l\ncrawl press l\ncrawl press l"
+        code = "python -c 'import sys; print(\"x\" * 40000); print(\"stderr marker\", file=sys.stderr)'\ncrawl press l\ncrawl press l\ncrawl press l"
         async def stream(messages, info):
             yield {0: DeltaThinkingPart(content="A public summary. ", signature="private-signature")}
             yield {0: DeltaThinkingPart(content="More detail.")}
@@ -66,11 +66,11 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(part["kind"] == "tool" for part in parts))
             self.assertNotIn("private-signature", raw)
             output = [row["data"] for row in rows if row["event"] == "execution.output"]
-            self.assertEqual("".join(item["text"] for item in output if item["stream"] == "stdout"), "x" * 12000 + "\n")
+            self.assertEqual("".join(item["text"] for item in output if item["stream"] == "stdout"), "x" * 40000 + "\n")
             self.assertEqual("".join(item["text"] for item in output if item["stream"] == "stderr"), "stderr marker\n")
-            self.assertEqual(len(result.turns[0].execution.output), 8000)
+            self.assertEqual(len(result.turns[0].execution.output), 32768)
             self.assertTrue(result.turns[0].execution.output_truncated)
-            self.assertEqual(sum(len(data["text"]) for event, data in display if event == "execution.output"), 8000)
+            self.assertEqual(sum(len(data["text"]) for event, data in display if event == "execution.output"), 32768)
             self.assertEqual(sum(row["event"] == "game.step" for row in rows), 3)
 
     async def test_setup_failure_is_logged_without_exception_body(self):

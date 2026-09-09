@@ -1,19 +1,21 @@
+import argparse
 import json
 import os
 import socket
-import sys
 
 
 def main():
     """Send one untrusted request; authority belongs to the parent broker."""
-    args = sys.argv[1:]
-    structured = args == ['observe', '--json']
-    if args == ['observe'] or structured:
+    parser = argparse.ArgumentParser(prog='crawl', description='Observe and interact with the game.')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('observe', help='Print the full game observation as JSON.')
+    press = commands.add_parser('press', help='Send one key without printing an observation.')
+    press.add_argument('key', metavar='KEY', help='One character or a named key, such as ENTER or CTRL+P.')
+    args = parser.parse_args()
+    if args.command == 'observe':
         request = {'type': 'observe'}
-    elif len(args) == 2 and args[0] == 'press':
-        request = {'type': 'press', 'key': args[1]}
     else:
-        raise SystemExit('usage: crawl observe [--json] | crawl press KEY')
+        request = {'type': 'press', 'key': args.key}
     try:
         with socket.socket(socket.AF_UNIX) as connection:
             connection.connect(os.environ['CRAWL_SOCKET'])
@@ -27,10 +29,8 @@ def main():
         raise SystemExit('Shell submission stopped') from None
     if 'error' in response:
         raise SystemExit(response['error'])
-    if structured:
-        print(json.dumps(response['observation']))
-    elif request['type'] == 'observe':
-        print(response['display'])
+    if request['type'] == 'observe':
+        print(json.dumps(response['observation'], ensure_ascii=False, separators=(',', ':')))
 
 
 if __name__ == '__main__':

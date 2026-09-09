@@ -32,15 +32,14 @@ Commands:
 - crawl press KEY: send one key, wait for readiness; silent on success.
   Keys: a printable character, ENTER, ESC, TAB, BACKSPACE, UP, DOWN, LEFT,
   RIGHT, or CTRL+A through CTRL+Z.
-- crawl observe: print the screen followed by styling JSON.
-  Blank text lines are omitted; screen_rows maps displayed lines to original rows.
-  Accepts --json for a parseable screen/metadata object.
+- crawl observe: print the full observation as one JSON line.
 Only request observations for intermediate inspection; the final one is automatic.
 Errors do not undo inputs; do not blindly retry failed scripts.
 
-Styling: cursor [row,col]; style_runs [row,col,length,style_palette index].
-Coordinates are zero-based terminal columns; wide symbols occupy two columns.
-Unlisted styling uses defaults; blank black-background styling is omitted.
+Observation rows retain all text and spaces; styles[row][column] indexes palette.
+Palette entries contain fg, bg, bold, italics, underline, reverse, blink, cursor.
+Coordinates are zero-based terminal columns: wide symbols span two; combining marks
+add none. Cursor is true only at its visible cell; blank-cell styling is retained.
 """
 
 
@@ -61,12 +60,10 @@ class ShellScript(BaseModel):
 def _prompt(observation: GameObservation, history: tuple[AgentTurnRecord, ...], goal: str,
             history_turns: int, max_context_chars: int) -> str:
     """Keep the full current screen and only recent whole turn records that fit."""
-    metadata = observation_data(observation)
-    screen = metadata.pop("screen")
-    payload = {"goal": goal, "observation": metadata, "history": [],
+    payload = {"goal": goal, "observation": observation_data(observation), "history": [],
                "omitted_turns": len(history)}
     def render():
-        return screen + "\n\n" + json.dumps(payload, ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if len(render()) > max_context_chars:
         raise ValueError("Current observation and goal exceed the context budget")
     for record in reversed(history[-history_turns:] if history_turns else ()):

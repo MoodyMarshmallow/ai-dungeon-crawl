@@ -23,9 +23,9 @@ bun run dev
 - A turn is one model-submitted shell script. There is no keypress limit; shell errors and timeouts return feedback so the model can continue. Game exit, the turn limit, and **Stop** end a run.
 - Each new run writes `runs/<run-id>/events.jsonl`: timestamped configuration, observations, exposed reasoning summaries, tool calls, full shell output, and completion/errors. Dashboard/model previews remain bounded; the log does not contain credentials or encrypted reasoning. Older runs cannot be recovered retroactively.
 - Switch between **Terminal** and **Tiles** to view the same game. Saves stay in `runs/`.
-- The agent uses `crawl observe`, `crawl observe --json`, and `crawl press KEY`. It can search the matching local `crawl_manual.rst` with `rg`, `grep`, or `sed`.
+- The agent uses `crawl observe` and `crawl press KEY`. It can search the matching local `crawl_manual.rst` with `rg`, `grep`, or `sed`.
 - Keypresses produce no output on success; use `crawl observe` for intermediate inspection. The model automatically receives the final screen after each submission. Documentation lookups use the local manual, not in-game help.
-- Observations print the screen without blank lines, then styling JSON; `screen_rows` preserves original row coordinates when lines are omitted. Styling on blank black backgrounds is omitted. `crawl observe --json` retains the full screen, including blank lines.
+- Observations are full JSON: `rows` preserves every text row and space, `styles[row][column]` indexes `palette`, and each palette entry includes all visual attributes and a `cursor` boolean. Columns are terminal columns (wide symbols span two; combining marks add none); blank-cell styling is retained. `crawl observe --json` is no longer accepted.
 
 ## Codebase
 

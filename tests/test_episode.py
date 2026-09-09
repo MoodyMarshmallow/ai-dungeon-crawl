@@ -124,7 +124,7 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_action_scripts_are_bounded_by_model_turn_limit(self):
         result = await EpisodeRunner(MockGameSession(), CodePolicy(
-            'crawl observe --json >/dev/null')).run(max_turns=2)
+            'crawl observe >/dev/null')).run(max_turns=2)
         self.assertEqual(result.stop_reason, "turn_limit")
         self.assertEqual(len(result.turns), 2)
         self.assertEqual(result.steps, ())

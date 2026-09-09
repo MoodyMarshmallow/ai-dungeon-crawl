@@ -10,6 +10,7 @@ from ai_dungeon_crawl.contracts import (
     ScreenStyle,
 )
 from ai_dungeon_crawl.policies import _prompt
+from ai_dungeon_crawl.observation_json import observation_data
 
 
 class ScreenObservationTests(unittest.TestCase):
@@ -36,19 +37,20 @@ class ScreenObservationTests(unittest.TestCase):
             (GameStep(before, GameAction("l"), current),),
         )
 
-        screen, metadata = _prompt(current, (record,), "goal", 1, 10000).rsplit('\n\n', 1)
-        self.assertEqual(screen, current.screen)
-        payload = json.loads(metadata)
-        self.assertNotIn('screen', payload['observation'])
-        self.assertEqual(payload["observation"]["style_palette"], [{"fg": "red"}])
-        self.assertEqual(payload["observation"]["style_runs"], [[0, 0, 1, 0]])
-        self.assertEqual(payload["observation"]["cursor"], [0, 1])
+        payload = json.loads(_prompt(current, (record,), "goal", 1, 10000))
+        self.assertEqual(payload['observation'], observation_data(current))
         self.assertNotIn("observation", payload["history"][0]["execution"])
         self.assertEqual(payload["history"][0]["execution"]["output"], "feedback")
 
         later = GameObservation(2, "later")
-        payload = json.loads(_prompt(later, (record,), "goal", 1, 10000).rsplit('\n\n', 1)[1])
-        self.assertEqual(payload["history"][0]["execution"]["observation"]["screen"], "next")
+        payload = json.loads(_prompt(later, (record,), "goal", 1, 10000))
+        self.assertEqual(payload["history"][0]["execution"]["observation"], observation_data(current))
+
+        budget = len(_prompt(later, (), 'goal', 1, 10000)) + 100
+        payload = json.loads(_prompt(later, (record,), 'goal', 1, budget))
+        self.assertEqual(payload['observation'], observation_data(later))
+        self.assertEqual(payload['history'], [])
+        self.assertEqual(payload['omitted_turns'], 1)
 
     def test_dense_style_runs_are_lossless_and_fit_default_context(self):
         styles = tuple(ScreenStyle(row=i // 100, col=i % 100, length=1,
@@ -58,15 +60,14 @@ class ScreenObservationTests(unittest.TestCase):
 
         prompt = _prompt(observation, (), "goal", 0, 64000)
         self.assertLess(len(prompt), 64000)
-        payload = json.loads(prompt.rsplit('\n\n', 1)[1])
+        payload = json.loads(prompt)
         self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 64000)
         recovered = []
-        defaults = {"fg": "default", "bg": "default", "bold": False,
-                    "italics": False, "underline": False, "reverse": False, "blink": False}
-        for row, col, length, palette_index in payload["observation"]["style_runs"]:
-            attrs = dict(defaults)
-            attrs.update(payload["observation"]["style_palette"][palette_index])
-            recovered.append(ScreenStyle(row, col, length, **attrs))
+        for row, indexes in enumerate(payload['observation']['styles']):
+            for col, palette_index in enumerate(indexes):
+                attrs = dict(payload['observation']['palette'][palette_index])
+                self.assertEqual(attrs.pop('cursor'), (row, col) == (0, 0))
+                recovered.append(ScreenStyle(row, col, 1, **attrs))
         self.assertEqual(tuple(recovered), styles)
 
 

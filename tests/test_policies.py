@@ -17,6 +17,7 @@ from ai_dungeon_crawl.contracts import GameAction, ExecutionResult, AgentTurn, G
 from ai_dungeon_crawl.policies import CodexPolicy, PydanticPolicy, create_policy, SHELL_DESCRIPTION, INSTRUCTIONS
 from ai_dungeon_crawl.mock_game import MockGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
+from ai_dungeon_crawl.observation_json import observation_data
 
 
 OBSERVATION = GameObservation(0, "######\n#@...#\n######")
@@ -95,7 +96,7 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             user_parts = [part for message in messages for part in message.parts
                           if isinstance(part, UserPromptPart)]
             self.assertEqual(len(user_parts), 1)
-            prompts.append(json.loads(user_parts[0].content.rsplit('\n\n', 1)[1]))
+            prompts.append(json.loads(user_parts[0].content))
             return response("pass")
 
         after = GameObservation(1, "next screen")
@@ -110,6 +111,9 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompts[0]["history"][0]["executed_keys"], ["l"])
         self.assertEqual(prompts[0]["omitted_turns"], 1)
         self.assertEqual(prompts[1]["history"], [])
+        self.assertEqual(prompts[0]["observation"], observation_data(after))
+        self.assertNotIn('observation', prompts[0]['history'][0]['execution'])
+        self.assertEqual(prompts[1]["observation"], observation_data(OBSERVATION))
 
     async def test_large_current_screen_is_rejected_not_truncated(self):
         def model(messages, info):
@@ -179,7 +183,7 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             user_parts = [part for message in messages for part in message.parts
                           if isinstance(part, UserPromptPart)]
             self.assertEqual(len(user_parts), 1)
-            prompts.append(json.loads(user_parts[0].content.rsplit('\n\n', 1)[1]))
+            prompts.append(json.loads(user_parts[0].content))
             return response('crawl press l\ncrawl press l' if len(prompts) == 1
                             else 'crawl press l')
 

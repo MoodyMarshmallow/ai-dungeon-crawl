@@ -12,7 +12,7 @@ import tempfile
 
 from .contracts import ExecutionResult, GameAction, validate_source, StopExecution
 from .events import emit_output
-from .observation_json import observation_data, format_observation
+from .observation_json import observation_data
 
 
 class ShellTerminal:
@@ -21,7 +21,7 @@ class ShellTerminal:
     Seatbelt enforces filesystem/network isolation. Resource limits apply per
     process/file, not as aggregate disk or memory quotas. macOS only, fail closed.
     """
-    def __init__(self, *, timeout_seconds=5, max_output_chars=8000, manual_path=None):
+    def __init__(self, *, timeout_seconds=5, max_output_chars=32768, manual_path=None):
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError('timeout_seconds must be finite and positive')
         if not 0 <= max_output_chars <= 65536:
@@ -160,7 +160,7 @@ class ShellTerminal:
                         response = {}
                     elif request.get('type') == 'observe':
                         data = observation_data(observation)
-                        response = {'observation': data, 'display': format_observation(data)}
+                        response = {'observation': data}
                     else:
                         raise ValueError('Unknown game request')
             except (ValueError, asyncio.TimeoutError) as exc:
