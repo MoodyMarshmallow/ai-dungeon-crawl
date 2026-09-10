@@ -84,6 +84,7 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(any("weapon" in arg for arg in args))
             self.assertEqual(args[-len(overrides):], overrides)
             self.assertEqual(spawn.call_args.kwargs["env"]["DCSS_HARNESS_NO_EXIT"], "1")
+            self.assertEqual(spawn.call_args.kwargs["env"]["DCSS_HARNESS_SCORE"], "1")
 
     def test_fragmented_tile_utf8_is_decoded_only_after_full_message(self):
         messages = []
@@ -97,6 +98,55 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
         session._socket.recv.side_effect = [raw[split:], b'*{"msg":"flush_messages"}\n', BlockingIOError()]
         session._read_tiles()
         self.assertEqual(messages, [{"msg": "test", "text": "é"}])
+
+    def test_score_messages_are_delivered_separately_from_tiles(self):
+        tiles = []
+        scores = []
+        session = DCSSGameSession(
+            "/no/game", on_tiles=lambda batch: tiles.extend(batch),
+            on_score=lambda score, game_turn, final, game_time: scores.append(
+                (score, game_turn, final, game_time)))
+        session._socket = Mock()
+        session._socket.recv.side_effect = [
+            b'{"msg":"map","cells":[]}\n'
+            b'{"msg":"harness_score","score":null,"game_turn":0,"final":false,"game_time":null}\n'
+            b'{"msg":"harness_score","score":123,"game_turn":7,"final":true,"game_time":70}\n',
+            BlockingIOError(),
+        ]
+        session._read_tiles()
+        self.assertEqual(tiles, [{"msg": "map", "cells": []}])
+        self.assertEqual(scores, [(None, 0, False, None), (123, 7, True, 70)])
+
+    async def test_invalid_score_payload_is_reported(self):
+        payloads = (
+            b'{"msg":"harness_score","game_turn":0,"final":false,"game_time":null}\n',
+            b'{"msg":"harness_score","score":true,"game_turn":0,"final":false,"game_time":null}\n',
+            b'{"msg":"harness_score","score":null,"game_turn":0,"final":true,"game_time":70}\n',
+        )
+        for payload in payloads:
+            session = DCSSGameSession("/no/game")
+            session._socket = Mock()
+            session._socket.recv.side_effect = [payload, BlockingIOError()]
+            with patch("asyncio.get_running_loop") as get_loop:
+                get_loop.return_value.remove_reader = Mock()
+                session._read_tiles()
+            self.assertTrue(session._failed)
+            self.assertIsInstance(session._queue.get_nowait(), ValueError)
+
+    async def test_score_callback_failure_is_reported(self):
+        failure = RuntimeError("recorder failed")
+        session = DCSSGameSession(
+            "/no/game", on_score=Mock(side_effect=failure))
+        session._socket = Mock()
+        session._socket.recv.side_effect = [
+            b'{"msg":"harness_score","score":1,"game_turn":1,"final":false,"game_time":null}\n',
+            BlockingIOError(),
+        ]
+        with patch("asyncio.get_running_loop") as get_loop:
+            get_loop.return_value.remove_reader = Mock()
+            session._read_tiles()
+        self.assertTrue(session._failed)
+        self.assertIs(session._queue.get_nowait(), failure)
 
     async def test_timeout_poisoning_prevents_action_retry(self):
         session = DCSSGameSession("/no/game", readiness_timeout=0.01)
@@ -135,9 +185,11 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
 class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
     async def test_ignored_input_has_new_boundary_and_clean_shutdown(self):
         messages = []
+        scores = []
         with tempfile.TemporaryDirectory(prefix="dcss-test-") as directory:
             session = DCSSGameSession(os.environ["DCSS_TEST_BINARY"], save_dir=directory,
-                                      on_tiles=lambda batch: messages.extend(batch))
+                                      on_tiles=lambda batch: messages.extend(batch),
+                                      on_score=lambda *event: scores.append(event))
             try:
                 before = await session.start()
                 self.assertIn("Agent the Minotaur Berserker", before.screen)
@@ -149,6 +201,9 @@ class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((after.width, after.height), (100, 30))
                 self.assertTrue(after.styles)
                 self.assertIn("version", [message["msg"] for message in messages])
+                self.assertTrue(scores)
+                self.assertTrue(all(message.get("msg") != "harness_score" for message in messages))
+                self.assertTrue(all(len(event) == 4 for event in scores))
                 for key in ("ESC", "CTRL+G", " ", "X", "CTRL+Q", "CTRL+C"):
                     guarded = await session.step(GameAction(key))
                     self.assertEqual(before.screen, guarded.screen, key)
@@ -162,15 +217,19 @@ class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_character_override_inventory_wait_and_blocked_exit(self):
         messages = []
+        scores = []
         with tempfile.TemporaryDirectory(prefix="dcss-test-") as directory:
             session = DCSSGameSession(os.environ["DCSS_TEST_BINARY"], save_dir=directory,
                 extra_args=("-name", "TransportTest", "-species", "Minotaur", "-background", "Fighter"),
-                on_tiles=lambda batch: messages.extend(batch))
+                on_tiles=lambda batch: messages.extend(batch),
+                on_score=lambda *event: scores.append(event))
             try:
                 first = await session.start()
                 self.assertIn("TransportTest the Minotaur Fighter", first.screen)
                 self.assertIn("choice of weapons", first.screen)
+                self.assertIsNone(scores[-1][3])
                 playing = await session.step(GameAction("a"))
+                self.assertEqual(scores[-1][3], 0)
                 self.assertIn("Health:", playing.screen)
                 self.assertIn("map", [message["msg"] for message in messages])
                 inventory = await session.step(GameAction("i"))
@@ -179,6 +238,7 @@ class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
                 await session.step(GameAction("ESC"))
                 waited = await session.step(GameAction("."))
                 self.assertIn("Time: 1.0", waited.screen)
+                self.assertEqual(scores[-1][3], 10)
                 for key in ("S", "CTRL+S", "CTRL+Q", "CTRL+Z"):
                     blocked = await session.step(GameAction(key))
                     self.assertIn("Session exit is disabled by the harness.", blocked.screen)

@@ -1,7 +1,19 @@
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
+
+
+def check_revision(checkout, lock):
+    """Accept the pinned fork or its upstream base plus our bundled patches."""
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+    if revision not in (lock["revision"], lock["upstream_revision"]):
+        raise ValueError(
+            f"DCSS revision {revision} is not pinned. Use {lock['repository']} "
+            f"at {lock['revision']}, or upstream at {lock['upstream_revision']}. "
+            "No files changed; the build helper never switches your checkout.")
 
 
 def main():
@@ -15,8 +27,13 @@ def main():
     source = checkout / "crawl-ref/source"
     if not (source / "tileweb.cc").is_file():
         parser.error("Expected a DCSS checkout containing crawl-ref/source/tileweb.cc")
+    lock = json.loads((root / "dcss.lock.json").read_text())
+    try:
+        check_revision(checkout, lock)
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        parser.error(str(exc))
     patches = [root / "patches" / name for name in (
-        "dcss-input-boundary.patch", "dcss-session-guard.patch",
+        "dcss-input-boundary.patch", "dcss-session-guard.patch", "dcss-score.patch",
     )]
     pending = []
     for patch in patches:

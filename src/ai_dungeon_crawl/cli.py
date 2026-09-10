@@ -44,6 +44,8 @@ def create_game(game: str, crawl_path: Path = DEFAULT_CRAWL_PATH, *, save_dir: P
     return DCSSGameSession(
         executable, cwd=executable.parent, save_dir=save_dir,
         on_tiles=lambda messages: emit("game.tiles", messages=list(messages)),
+        on_score=lambda score, game_turn, final, game_time: emit(
+            "game.score", score=score, game_turn=game_turn, final=final, game_time=game_time),
     )
 
 

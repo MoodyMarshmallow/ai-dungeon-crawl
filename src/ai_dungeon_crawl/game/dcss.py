@@ -37,7 +37,8 @@ class DCSSGameSession:
     def __init__(self, executable: Path | str, *, cwd: Path | str | None = None,
                  save_dir: Path | str | None = None, width: int = 100, height: int = 30,
                  readiness_timeout: float = 30, extra_args: Sequence[str] = (),
-                 on_tiles: Callable[[tuple[dict, ...]], None] | None = None) -> None:
+                 on_tiles: Callable[[tuple[dict, ...]], None] | None = None,
+                 on_score: Callable[[int | None, int, bool, int | None], None] | None = None) -> None:
         if not (80 <= width <= 300 and 24 <= height <= 150):
             raise ValueError("DCSS terminal bounds are 80–300 columns and 24–150 rows")
         if not math.isfinite(readiness_timeout) or readiness_timeout <= 0:
@@ -50,6 +51,7 @@ class DCSSGameSession:
         self.readiness_timeout = readiness_timeout
         self.extra_args = tuple(extra_args)
         self.on_tiles = on_tiles
+        self.on_score = on_score
         self._terminal = TerminalScreen(width, height)
         self._nonce = secrets.token_hex(24)
         self._decoder = BoundaryDecoder(
@@ -87,7 +89,8 @@ class DCSSGameSession:
         env = dict(PATH=os.defpath, HOME=str(self.save_dir),
                    TERM="xterm-256color", LANG="en_US.UTF-8",
                    LC_ALL="en_US.UTF-8", COLUMNS=str(self.width), LINES=str(self.height),
-                   DCSS_INPUT_MARKER=self._nonce, DCSS_HARNESS_NO_EXIT="1")
+                   DCSS_INPUT_MARKER=self._nonce, DCSS_HARNESS_NO_EXIT="1",
+                   DCSS_HARNESS_SCORE="1")
         self._log = (self.save_dir / "process.log").open("ab")
         # DCSS rejects duplicate command-line options. Fill in only missing
         # character options, and leave weapon selection to the agent.
@@ -180,6 +183,7 @@ class DCSSGameSession:
         if self._socket is None:
             return
         messages = []
+        scores = []
         try:
             while True:
                 try:
@@ -195,7 +199,32 @@ class DCSSGameSession:
                     message = json.loads(line)
                     if not isinstance(message, dict):
                         raise ValueError("Invalid DCSS tile message")
-                    messages.append(message)
+                    if message.get("msg") == "harness_score":
+                        required = ("score", "game_turn", "final", "game_time")
+                        if any(field not in message for field in required):
+                            raise ValueError("Invalid DCSS harness score message")
+                        score = message.get("score")
+                        game_turn = message.get("game_turn")
+                        final = message.get("final")
+                        game_time = message["game_time"]
+                        if game_time is not None and (type(game_time) is not int or game_time < 0):
+                            raise ValueError("Invalid DCSS elapsed game time")
+                        if score is not None and (isinstance(score, bool) or
+                                                  not isinstance(score, int) or score < 0):
+                            raise ValueError("Invalid DCSS harness score")
+                        if (isinstance(game_turn, bool) or not isinstance(game_turn, int) or
+                                game_turn < 0):
+                            raise ValueError("Invalid DCSS harness game turn")
+                        if not isinstance(final, bool):
+                            raise ValueError("Invalid DCSS harness score final flag")
+                        if final and score is None:
+                            raise ValueError("Final DCSS harness score must be an integer")
+                        scores.append((score, game_turn, final, game_time))
+                    else:
+                        messages.append(message)
+            if self.on_score:
+                for score, game_turn, final, game_time in scores:
+                    self.on_score(score, game_turn, final, game_time)
             if messages and self.on_tiles:
                 self.on_tiles(tuple(messages))
         except Exception as exc:

@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from ai_dungeon_crawl.cli import DEFAULT_CRAWL_PATH, add_game_arguments, create_game
 from ai_dungeon_crawl.game.mock_game import MockGameSession
@@ -23,6 +24,18 @@ class GameSelectionTests(unittest.TestCase):
     def test_missing_dcss_binary_fails_closed(self):
         with self.assertRaisesRegex(FileNotFoundError, "DCSS build missing"):
             create_game("dcss", Path("/definitely/not/a/dcss/binary"))
+
+    def test_dcss_wires_score_events_without_changing_tile_events(self):
+        with patch("ai_dungeon_crawl.game.dcss.DCSSGameSession") as session_type, \
+                patch("ai_dungeon_crawl.cli.emit") as emit:
+            executable = Path(__file__).resolve()
+            game = create_game("dcss", executable)
+            self.assertIs(game, session_type.return_value)
+            kwargs = session_type.call_args.kwargs
+            kwargs["on_tiles"]([{"msg": "map"}])
+            kwargs["on_score"](42, 9, True, 90)
+            emit.assert_any_call("game.tiles", messages=[{"msg": "map"}])
+            emit.assert_any_call("game.score", score=42, game_turn=9, final=True, game_time=90)
 
 
 if __name__ == "__main__":
