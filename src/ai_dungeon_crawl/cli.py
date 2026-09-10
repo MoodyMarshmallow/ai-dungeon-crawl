@@ -91,7 +91,7 @@ async def run(backend: str, model: str | None, max_turns: int,
               manual_path: Path | None = None, reasoning_effort: str = "default"):
     print(f"Game: {game}; policy: {backend}", flush=True)
     directory = new_run_directory()
-    print(f"Log: {directory / 'events.jsonl'}", flush=True)
+    print(f"Log: {directory / 'model.jsonl'}", flush=True)
     result = await run_episode(backend, model, max_turns, game, crawl_path,
                                manual_path, reasoning_effort, run_dir=directory)
     for record in result.turns:

@@ -27,7 +27,12 @@ export function parseOutputObservation(source: string): OutputObservation | null
   if (!source.trimStart().startsWith("{")) return null;
   try {
     const value: unknown = JSON.parse(source);
-    if (!record(value) || !keys(value, ["id", "ended", "width", "height", "rows", "palette", "styles"])) return null;
+    if (!record(value)) return null;
+    const fields = ["id", "ended", "width", "height", "rows", "palette", "styles"];
+    const journal = keys(value, [...fields, "timestamp", "sequence"]);
+    if (!keys(value, fields) && !journal) return null;
+    if (journal && ((value.timestamp !== null && (!Number.isSafeInteger(value.timestamp) || (value.timestamp as number) < 0)) ||
+        !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0)) return null;
     const { id, ended, width, height, rows, palette, styles } = value;
     if (!Number.isSafeInteger(id) || (id as number) < 0 || typeof ended !== "boolean" ||
         !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||

@@ -2,12 +2,15 @@ import asyncio
 import logging
 from dataclasses import asdict
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 from .contracts import GameEpisodeResult, GameSession, Policy, GameStep, AgentTurnRecord, StopExecution
 from .shell.terminal import ShellTerminal
 from .events import emit
+from .observation_history import has_observation_journal
+from .run_log import episode_log
 
 
 class EpisodeRunner:
@@ -22,6 +25,14 @@ class EpisodeRunner:
             manual_path=Path(manual_source) if manual_source is not None else None)
 
     async def run(self, *, max_turns: int = 50) -> GameEpisodeResult:
+        # Library callers get a temporary journal; CLI/dashboard supply a durable one.
+        if not has_observation_journal():
+            with tempfile.TemporaryDirectory(prefix="crawl-journal-") as directory:
+                with episode_log(Path(directory)):
+                    return await self._run(max_turns=max_turns)
+        return await self._run(max_turns=max_turns)
+
+    async def _run(self, *, max_turns: int) -> GameEpisodeResult:
         if max_turns < 0:
             raise ValueError("Agent-turn limit cannot be negative")
         steps, turns = [], []

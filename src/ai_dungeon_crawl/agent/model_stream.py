@@ -21,6 +21,7 @@ class ObservedModel(WrapperModel):
 
     async def request(self, messages, model_settings, model_request_parameters):
         emit("model.started")
+        tool_parts = {}
         async with self.wrapped.request_stream(
             messages, model_settings, model_request_parameters,
         ) as stream:
@@ -32,6 +33,7 @@ class ObservedModel(WrapperModel):
                              kind="reasoning" if isinstance(part, ThinkingPart) else "text",
                              text=part.content, replace=True)
                     elif isinstance(part, ToolCallPart):
+                        tool_parts[event.index] = part
                         emit("model.part", index=event.index, kind="tool", name=part.tool_name,
                              text=part.args if isinstance(part.args, str) else json.dumps(part.args) if part.args else "",
                              replace=True)
@@ -43,6 +45,11 @@ class ObservedModel(WrapperModel):
                                  kind="reasoning" if isinstance(delta, ThinkingPartDelta) else "text",
                                  text=delta.content_delta, replace=False)
                     elif isinstance(delta, ToolCallPartDelta):
+                        part = tool_parts[event.index] = delta.apply(tool_parts[event.index])
+                        if isinstance(delta.args_delta, dict):
+                            emit("model.part", index=event.index, kind="tool", name=part.tool_name,
+                                 text=json.dumps(part.args), replace=True)
+                            continue
                         emit("model.part", index=event.index, kind="tool",
                              name=delta.tool_name_delta or "",
                              text=delta.args_delta or "", replace=False)

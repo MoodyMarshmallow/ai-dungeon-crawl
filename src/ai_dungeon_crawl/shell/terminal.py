@@ -12,7 +12,7 @@ import tempfile
 
 from ..contracts import ExecutionResult, GameAction, validate_source, validate_timeout_ms, StopExecution
 from ..events import emit_output
-from ..game.observation_json import observation_data
+from ..observation_history import read_observations
 
 
 class ShellTerminal:
@@ -161,8 +161,11 @@ class ShellTerminal:
                             in_action = False
                         response = {}
                     elif request.get('type') == 'observe':
-                        data = observation_data(observation)
-                        response = {'observation': data}
+                        if set(request) - {'type', 'since', 'until', 'limit'}:
+                            raise ValueError('Unknown observation query option')
+                        response = {'observations': read_observations(
+                            since=request.get('since'), until=request.get('until'),
+                            limit=request.get('limit'))}
                     else:
                         raise ValueError('Unknown game request')
             except (ValueError, asyncio.TimeoutError) as exc:

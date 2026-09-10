@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ from unittest.mock import patch
 from ai_dungeon_crawl.contracts import GameObservation, ScreenStyle, StopExecution
 from ai_dungeon_crawl.shell.terminal import ShellTerminal
 from ai_dungeon_crawl.game.observation_json import observation_data
+from ai_dungeon_crawl.events import emit
+from ai_dungeon_crawl.run_log import episode_log
 
 
 class ShellValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -39,15 +42,25 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         self.observation = GameObservation(1, '  screen  \n next ', width=12, height=2,
                                            styles=(ScreenStyle(0, 2, 3, fg='red'),), cursor=(1, 2))
         self.keys = []
+        self.journal_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.journal_directory.cleanup)
+        self.journal = episode_log(Path(self.journal_directory.name))
+        self.journal.__enter__()
 
     async def asyncTearDown(self):
         await self.terminal.close()
+        self.journal.__exit__(None, None, None)
 
     async def press(self, action):
         self.keys.append(action.key)
-        return GameObservation(len(self.keys) + 1, 'after ' + action.key)
+        observation = GameObservation(len(self.keys) + 1, 'after ' + action.key)
+        emit('game.score', game_time=len(self.keys) * 10, score=0)
+        emit('game.step', key=action.key, observation=asdict(observation))
+        return observation
 
     async def run_code(self, code):
+        if not self.keys:
+            emit('game.observation', **asdict(self.observation))
         return await self.terminal.execute_shell(code, self.observation, self.press)
 
     async def test_early_pipeline_reader_exit_is_quiet(self):
@@ -73,7 +86,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
     async def test_cli_preserves_metadata_and_actions(self):
         result = await self.run_code('crawl observe; crawl press l; crawl observe')
         first, second = map(json.loads, result.output.splitlines())
-        self.assertEqual(first, observation_data(self.observation))
+        self.assertEqual(first, {**observation_data(self.observation), 'timestamp': None, 'sequence': 0})
         self.assertEqual(second['id'], 2)
         self.assertEqual(self.keys, ['l'])
         self.assertEqual(result.observation.id, 2)
@@ -82,7 +95,8 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         self.observation = GameObservation(1, '\n'.join([' ' * 100] * 30),
             width=100, height=30, styles=(ScreenStyle(29, 0, 100, fg='red'),), cursor=(29, 99))
         result = await self.run_code('crawl observe')
-        self.assertEqual(json.loads(result.output), observation_data(self.observation))
+        self.assertEqual(json.loads(result.output),
+                         {**observation_data(self.observation), 'timestamp': None, 'sequence': 0})
         self.assertFalse(result.output_truncated)
         self.assertEqual(len(result.output.splitlines()), 1)
 
@@ -91,6 +105,19 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result.status, 'ok')
         self.assertIn('usage:', result.output)
         self.assertEqual(self.keys, [])
+
+    async def test_history_queries_do_not_press_keys_or_expose_real_time(self):
+        result = await self.run_code('crawl press l; crawl press l; crawl observe --since 10 --until 20 -n 2')
+        rows = [json.loads(line) for line in result.output.splitlines()]
+        self.assertEqual([row['id'] for row in rows], [2, 3])
+        self.assertEqual([row['timestamp'] for row in rows], [10, 20])
+        self.assertNotIn('real_timestamp', result.output)
+        self.assertEqual(self.keys, ['l', 'l'])
+
+    async def test_observe_uses_journal_not_supplied_screen(self):
+        emit('game.observation', **asdict(GameObservation(99, 'recorded')))
+        result = await self.terminal.execute_shell('crawl observe', self.observation, self.press)
+        self.assertEqual(json.loads(result.output)['id'], 99)
 
     async def test_keypress_is_silent_and_still_updates_observation(self):
         result = await self.run_code('crawl press l; crawl press l')

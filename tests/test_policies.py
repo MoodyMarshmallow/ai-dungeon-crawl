@@ -9,7 +9,7 @@ import httpx2
 from openai import AsyncOpenAI
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, UserPromptPart
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import FunctionModel, DeltaToolCall
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -195,7 +195,11 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             return response('crawl press l\ncrawl press l' if len(prompts) == 1
                             else 'crawl press l')
 
-        result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(model))).run()
+        async def stream(messages, info):
+            call = model(messages, info).parts[0]
+            yield {0: DeltaToolCall(name=call.tool_name, json_args=json.dumps(call.args))}
+
+        result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual([len(turn.steps) for turn in result.turns], [2, 1])
         self.assertEqual(len(prompts), 2)

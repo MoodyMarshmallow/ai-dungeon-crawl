@@ -27,6 +27,17 @@ test("multiple observations interleaved with plain output preserve malformed and
   expect(executionOutputHtml(raw.slice(0, -1))).not.toContain("<pre");
   expect(executionOutputHtml(`${tail}\n[Output truncated]`)).toEndWith("\n[Output truncated]");
 });
+test("journal screen metadata preserves rendering while unknown or invalid fields stay raw", () => {
+  for (const timestamp of [null, 0, 17]) {
+    const raw = JSON.stringify({ ...fixture(), timestamp, sequence: 12 });
+    expect(parseOutputObservation(raw)).not.toBeNull();
+    expect(executionOutputHtml(raw)).toContain('class="observation-screen"');
+  }
+  for (const metadata of [{ timestamp: "today", sequence: 1 }, { timestamp: 0, sequence: -1 },
+      { timestamp: 0 }, { timestamp: 0, sequence: 1, real_timestamp: "now" }]) {
+    expect(parseOutputObservation(JSON.stringify({ ...fixture(), ...metadata }))).toBeNull();
+  }
+});
 test("only strict complete observations render, including valid dimensions and safe palettes", () => {
   const invalid = [
     { ...fixture(), extra: true }, { ...fixture(), width: 6 }, { ...fixture(), height: 2 },

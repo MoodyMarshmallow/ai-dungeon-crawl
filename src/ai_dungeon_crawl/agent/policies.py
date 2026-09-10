@@ -35,7 +35,12 @@ Commands:
 - crawl press KEY: send one key, wait for readiness; silent on success.
   Keys: a printable character, ENTER, ESC, TAB, BACKSPACE, UP, DOWN, LEFT,
   RIGHT, or CTRL+A through CTRL+Z.
-- crawl observe: print the full observation as one JSON line.
+- crawl observe: read the latest logged screen as one JSON line, without game input.
+  -n N returns the last N screens (1–100), oldest first. --since TICK and
+  --until TICK filter inclusively by DCSS ticks (10 per standard turn), not real
+  time; filtered queries default to the latest 20 matches. Each screen includes
+  timestamp (game ticks, null before play) and sequence (unique log position).
+  Multiple keypresses can share a tick. No matches prints nothing.
 Only request observations for intermediate inspection; the final one is automatic.
 Errors do not undo inputs; do not blindly retry failed scripts.
 

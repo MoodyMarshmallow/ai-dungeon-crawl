@@ -21,7 +21,8 @@ class ShellClientTests(unittest.TestCase):
 
     def test_invalid_arguments_never_connect_to_game(self):
         for args in ([], ['unknown'], ['press'], ['press', 'l', '--json'],
-                     ['observe', 'extra'], ['observe', '--json']):
+                     ['observe', 'extra'], ['observe', '--json'],
+                     ['observe', '--since', '2026-09-10'], ['observe', '--real-time', '10']):
             with self.subTest(args=args), patch('sys.argv', ['crawl', *args]), \
                     patch('ai_dungeon_crawl.shell._shell_client.socket.socket') as socket, \
                     redirect_stderr(io.StringIO()) as output:
@@ -34,8 +35,14 @@ class ShellClientTests(unittest.TestCase):
     def test_commands_preserve_requests_and_output(self):
         observation = {'rows': [' 界 '], 'styles': [[0, 0, 0, 0]]}
         for args, request, response, expected in (
-            (['observe'], {'type': 'observe'}, {'observation': observation},
+            (['observe'], {'type': 'observe'}, {'observations': [observation]},
              json.dumps(observation, ensure_ascii=False, separators=(',', ':')) + '\n'),
+            (['observe', '--since', '10', '--until', '20', '-n', '2'],
+             {'type': 'observe', 'since': 10, 'until': 20, 'limit': 2},
+             {'observations': [observation, observation]},
+             (json.dumps(observation, ensure_ascii=False, separators=(',', ':')) + '\n') * 2),
+            (['observe', '--since', '999'], {'type': 'observe', 'since': 999},
+             {'observations': []}, ''),
             (['press', 'l'], {'type': 'press', 'key': 'l'}, {}, ''),
             (['press', '-'], {'type': 'press', 'key': '-'}, {}, ''),
             (['press', 'CTRL+P'], {'type': 'press', 'key': 'CTRL+P'}, {}, ''),
