@@ -34,6 +34,7 @@ def main():
         parser.error(str(exc))
     patches = [root / "patches" / name for name in (
         "dcss-input-boundary.patch", "dcss-session-guard.patch", "dcss-score.patch",
+        "dcss-outcome.patch",
     )]
     pending = []
     for patch in patches:

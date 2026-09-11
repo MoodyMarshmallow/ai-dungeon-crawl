@@ -85,6 +85,59 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(args[-len(overrides):], overrides)
             self.assertEqual(spawn.call_args.kwargs["env"]["DCSS_HARNESS_NO_EXIT"], "1")
             self.assertEqual(spawn.call_args.kwargs["env"]["DCSS_HARNESS_SCORE"], "1")
+            self.assertEqual(spawn.call_args.kwargs["env"]["DCSS_HARNESS_OUTCOME"], "1")
+
+    def test_explicit_outcomes_end_at_input_boundary_without_process_exit(self):
+        for outcome in ("death", "win", "quit"):
+            tiles = []
+            session = DCSSGameSession("/no/game", on_tiles=lambda batch: tiles.extend(batch))
+            session._socket = Mock()
+            session._socket.recv.side_effect = [
+                json.dumps({"msg": "harness_outcome", "outcome": outcome}).encode() + b'\n',
+                BlockingIOError(),
+            ]
+            session._boundary()
+            observation = session._queue.get_nowait()
+            self.assertTrue(observation.ended)
+            self.assertEqual(observation.outcome, outcome)
+            self.assertEqual(session.outcome, outcome)
+            self.assertEqual(tiles, [])
+
+    def test_death_text_and_final_score_are_not_death_signals(self):
+        session = DCSSGameSession("/no/game")
+        session._terminal.feed(b"You die... Goodbye, Agent.")
+        session._socket = Mock()
+        session._socket.recv.side_effect = [
+            b'{"msg":"harness_score","score":123,"game_turn":7,"final":true,"game_time":70}\n',
+            b'{"msg":"harness_score","score":null,"game_turn":7,"final":false,"game_time":null}\n',
+            BlockingIOError(),
+        ]
+        session._boundary()
+        observation = session._queue.get_nowait()
+        self.assertFalse(observation.ended)
+        self.assertIsNone(observation.outcome)
+
+    async def test_process_exit_without_outcome_is_not_death(self):
+        session = DCSSGameSession("/no/game")
+        session._process = Mock(wait=AsyncMock(return_value=0))
+        await session._watch_exit()
+        observation = session._queue.get_nowait()
+        self.assertTrue(observation.ended)
+        self.assertIsNone(observation.outcome)
+
+    async def test_invalid_and_conflicting_outcomes_fail_transport(self):
+        for payload in ({"msg": "harness_outcome"},
+                        {"msg": "harness_outcome", "outcome": "timeout"},
+                        {"msg": "harness_outcome", "outcome": "win"}):
+            session = DCSSGameSession("/no/game")
+            session.outcome = "death"
+            session._socket = Mock()
+            session._socket.recv.side_effect = [json.dumps(payload).encode() + b'\n', BlockingIOError()]
+            with patch("asyncio.get_running_loop") as get_loop:
+                get_loop.return_value.remove_reader = Mock()
+                session._read_tiles()
+            self.assertTrue(session._failed)
+            self.assertIsInstance(session._queue.get_nowait(), ValueError)
 
     def test_fragmented_tile_utf8_is_decoded_only_after_full_message(self):
         messages = []
@@ -111,6 +164,7 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
             b'{"msg":"map","cells":[]}\n'
             b'{"msg":"harness_score","score":null,"game_turn":0,"final":false,"game_time":null}\n'
             b'{"msg":"harness_score","score":123,"game_turn":7,"final":true,"game_time":70}\n',
+            b'{"msg":"harness_score","score":null,"game_turn":7,"final":false,"game_time":null}\n',
             BlockingIOError(),
         ]
         session._read_tiles()
@@ -183,6 +237,56 @@ class TransportFailureTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(os.environ.get("DCSS_TEST_BINARY"), "Set DCSS_TEST_BINARY for real-game tests")
 class RealDCSSTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_quit_is_not_death(self):
+        spawn = asyncio.create_subprocess_exec
+
+        async def allow_exit_for_test(*args, **kwargs):
+            kwargs["env"].pop("DCSS_HARNESS_NO_EXIT")
+            return await spawn(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="dcss-quit-test-") as directory:
+            session = DCSSGameSession(os.environ["DCSS_TEST_BINARY"], save_dir=directory)
+            try:
+                with patch("ai_dungeon_crawl.game.dcss.asyncio.create_subprocess_exec",
+                           side_effect=allow_exit_for_test):
+                    await session.start()
+                await session.step(GameAction("a"))
+                confirmation = await session.step(GameAction("CTRL+Q"))
+                self.assertIn("abandon this character", confirmation.screen)
+                self.assertIsNone(confirmation.outcome)
+                for key in (*"quit", "ENTER"):
+                    observation = await session.step(GameAction(key))
+                self.assertTrue(observation.ended)
+                self.assertEqual(observation.outcome, "quit")
+                self.assertIsNone(session._process.returncode)
+            finally:
+                await session.close()
+
+    async def test_death_and_final_score_arrive_before_postmortem_exit(self):
+        scores = []
+        with tempfile.TemporaryDirectory(prefix="dcss-death-test-") as directory:
+            session = DCSSGameSession(os.environ["DCSS_TEST_BINARY"], save_dir=directory,
+                                      on_score=lambda *event: scores.append(event))
+            try:
+                await session.start()
+                # Use native wizard Lua to exercise final death deterministically.
+                # Wizard death confirmations must not themselves end the session.
+                for key in ("a", "&", *"wiz", "ENTER", "CTRL+T", *"you.die()", "ENTER"):
+                    before = await session.step(GameAction(key))
+                    self.assertIsNone(before.outcome)
+                self.assertIn("Die?", before.screen)
+                dead = await session.step(GameAction("Y"))
+                self.assertTrue(dead.ended)
+                self.assertEqual(dead.outcome, "death")
+                self.assertIsNone(session._process.returncode)
+                self.assertTrue(scores[-1][2])
+                self.assertIsInstance(scores[-1][0], int)
+                self.assertIsInstance(scores[-1][3], int)
+                with self.assertRaisesRegex(RuntimeError, "not accepting"):
+                    await session.step(GameAction("ENTER"))
+            finally:
+                await session.close()
+
     async def test_ignored_input_has_new_boundary_and_clean_shutdown(self):
         messages = []
         scores = []

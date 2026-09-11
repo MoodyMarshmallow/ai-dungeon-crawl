@@ -69,7 +69,8 @@ class EpisodeRunner:
                 emit("execution.finished", id=len(turns) - 1, **asdict(execution))
 
             if observation.ended:
-                reason = "game_exited"
+                outcome = getattr(self._game, "outcome", None)
+                reason = outcome if outcome in ("death", "win", "quit") else "game_exited"
             else:
                 reason = "turn_limit"
             return GameEpisodeResult(reason, observation, tuple(steps), tuple(turns))

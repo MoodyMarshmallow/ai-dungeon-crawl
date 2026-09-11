@@ -1,0 +1,36 @@
+diff --git a/crawl-ref/source/ouch.cc b/crawl-ref/source/ouch.cc
+index cbc15ed22d..a53f604785 100644
+--- a/crawl-ref/source/ouch.cc
++++ b/crawl-ref/source/ouch.cc
+@@ -1608,6 +1608,31 @@ void player_die(kill_method_type death_type, mid_t source, int dam,
+ 
+     // Prevent bogus notes.
+     activate_notes(false);
++#ifdef USE_TILE_WEB
++    // This is final death, after wizard/explore reprieves and extra lives.
++    // Publish before death messages can block on a postmortem input prompt.
++    if (getenv("DCSS_HARNESS_OUTCOME"))
++    {
++        tiles.json_open_object();
++        tiles.json_write_string("msg", "harness_outcome");
++        tiles.json_write_string("outcome", _is_real_death(death_type) ? "death"
++                                : death_type == KILLED_BY_WINNING ? "win" : "quit");
++        tiles.json_close_object();
++        tiles.finish_message();
++        if (getenv("DCSS_HARNESS_SCORE"))
++        {
++            tiles.json_open_object();
++            tiles.json_write_string("msg", "harness_score");
++            tiles.json_write_int("score", se.get_score());
++            tiles.json_write_int("game_turn", you.num_turns);
++            tiles.json_write_int("game_time", you.elapsed_time);
++            tiles.json_write_bool("final", true);
++            tiles.json_close_object();
++            tiles.finish_message();
++        }
++        tiles.flush_messages();
++    }
++#endif
+     _print_endgame_messages(se);
+     end_game(se);
+ }

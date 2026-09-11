@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import errno
 import fcntl
 import json
@@ -69,6 +70,8 @@ class DCSSGameSession:
         self._closed = False
         self._failed = False
         self._ended = False
+        self.outcome: str | None = None
+        self._final_score_received = False
 
     async def start(self) -> GameObservation:
         if self._started or self._closed:
@@ -90,7 +93,7 @@ class DCSSGameSession:
                    TERM="xterm-256color", LANG="en_US.UTF-8",
                    LC_ALL="en_US.UTF-8", COLUMNS=str(self.width), LINES=str(self.height),
                    DCSS_INPUT_MARKER=self._nonce, DCSS_HARNESS_NO_EXIT="1",
-                   DCSS_HARNESS_SCORE="1")
+                   DCSS_HARNESS_SCORE="1", DCSS_HARNESS_OUTCOME="1")
         self._log = (self.save_dir / "process.log").open("ab")
         # DCSS rejects duplicate command-line options. Fill in only missing
         # character options, and leave weapon selection to the agent.
@@ -160,7 +163,9 @@ class DCSSGameSession:
     def _boundary(self) -> None:
         self._read_tiles()
         self._id += 1
-        self._queue.put_nowait(self._terminal.observation(self._id))
+        self._queue.put_nowait(replace(
+            self._terminal.observation(self._id, ended=self.outcome is not None),
+            outcome=self.outcome))
 
     def _read_terminal(self) -> None:
         if self._master is None:
@@ -199,7 +204,14 @@ class DCSSGameSession:
                     message = json.loads(line)
                     if not isinstance(message, dict):
                         raise ValueError("Invalid DCSS tile message")
-                    if message.get("msg") == "harness_score":
+                    if message.get("msg") == "harness_outcome":
+                        outcome = message.get("outcome")
+                        if outcome not in ("death", "win", "quit"):
+                            raise ValueError("Invalid DCSS harness outcome")
+                        if self.outcome is not None and self.outcome != outcome:
+                            raise ValueError("Conflicting DCSS harness outcomes")
+                        self.outcome = outcome
+                    elif message.get("msg") == "harness_score":
                         required = ("score", "game_turn", "final", "game_time")
                         if any(field not in message for field in required):
                             raise ValueError("Invalid DCSS harness score message")
@@ -219,7 +231,11 @@ class DCSSGameSession:
                             raise ValueError("Invalid DCSS harness score final flag")
                         if final and score is None:
                             raise ValueError("Final DCSS harness score must be an integer")
-                        scores.append((score, game_turn, final, game_time))
+                        # Postmortem input prompts still emit live heartbeats;
+                        # they must not replace the official final score.
+                        if not self._final_score_received:
+                            scores.append((score, game_turn, final, game_time))
+                        self._final_score_received |= final
                     else:
                         messages.append(message)
             if self.on_score:
@@ -243,7 +259,8 @@ class DCSSGameSession:
             self._queue.put_nowait(RuntimeError(f"DCSS exited with status {code}; see {self.save_dir / 'process.log'}"))
         else:
             self._id += 1
-            self._queue.put_nowait(self._terminal.observation(self._id, ended=True))
+            self._queue.put_nowait(replace(
+                self._terminal.observation(self._id, ended=True), outcome=self.outcome))
 
     async def close(self) -> None:
         if self._closed:

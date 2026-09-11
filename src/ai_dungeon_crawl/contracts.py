@@ -43,6 +43,7 @@ class GameObservation:
     height: int = 0
     styles: Tuple[ScreenStyle, ...] = ()
     cursor: Optional[Tuple[int, int]] = None
+    outcome: Optional[Literal["death", "win", "quit"]] = None
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,7 @@ class GameStep:
 class GameEpisodeResult:
     """The outcome and recorded progress of one game episode."""
 
-    stop_reason: Literal["game_exited", "turn_limit"]
+    stop_reason: Literal["game_exited", "turn_limit", "death", "win", "quit"]
     final_observation: GameObservation
     steps: Tuple[GameStep, ...]
     turns: Tuple["AgentTurnRecord", ...]
