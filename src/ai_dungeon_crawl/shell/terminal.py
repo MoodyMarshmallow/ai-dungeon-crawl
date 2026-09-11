@@ -21,7 +21,15 @@ class ShellTerminal:
     Seatbelt enforces filesystem/network isolation. Resource limits apply per
     process/file, not as aggregate disk or memory quotas. macOS only, fail closed.
     """
-    def __init__(self, *, timeout_seconds=5, max_output_chars=32768, manual_path=None):
+    def __init__(self, *, timeout_seconds=5, max_output_chars=32768, manual_path=None,
+                 profile='action', artifacts_path=None, review_log_path=None):
+        if profile not in ('action', 'review'):
+            raise ValueError('Unknown shell profile')
+        if profile == 'review' and review_log_path is None:
+            raise ValueError('Review shell requires finished episode logs')
+        self.profile = profile
+        self.artifacts_path = Path(artifacts_path).resolve() if artifacts_path else None
+        self.review_log_path = Path(review_log_path).resolve() if review_log_path else None
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError('timeout_seconds must be finite and positive')
         if not 0 <= max_output_chars <= 65536:
@@ -48,6 +56,9 @@ class ShellTerminal:
         root = Path(self._directory.name).resolve()
         directory = root / 'work'
         directory.mkdir(exist_ok=True)
+        from .review_files import prepare_files
+        prepare_files(root, directory, profile=self.profile,
+                      artifacts_path=self.artifacts_path, review_log_path=self.review_log_path)
         if self.manual_path and not (root / 'docs').exists():
             from .manual import prepare_manual
             provision = prepare_manual(self.manual_path, root / 'docs')
@@ -63,9 +74,10 @@ class ShellTerminal:
         # These are conveniences, never security boundaries: the caller can
         # bypass the CLI, so the broker treats all requests as untrusted.
         import shlex
-        (bindir / 'crawl').write_text('#!/bin/bash\nexec ' + shlex.quote(executable) +
-                                    ' -I -S -B ' + shlex.quote(client) + ' "$@"\n')
-        (bindir / 'crawl').chmod(0o700)
+        if self.profile == 'action':
+            (bindir / 'crawl').write_text('#!/bin/bash\nexec ' + shlex.quote(executable) +
+                                        ' -I -S -B ' + shlex.quote(client) + ' "$@"\n')
+            (bindir / 'crawl').chmod(0o700)
         for name in ('python', 'python3'):
             target = bindir / name
             if not target.exists():
@@ -86,6 +98,7 @@ class ShellTerminal:
                  literal('/dev/null'), literal('/dev/urandom')]
         if self.manual_path:
             reads.append(subpath(root / 'docs'))
+        reads.extend([subpath(root / 'logs'), subpath(root / 'artifacts'), subpath(root / 'reference')])
         if rg:
             reads.append(literal(rg))
             libraries = subprocess.check_output(['/usr/bin/otool', '-L', rg], text=True)
@@ -104,11 +117,13 @@ class ShellTerminal:
             # setsid/setpgid, so require ordinary fork+exec for subprocesses.
             '(deny syscall-unix (syscall-number SYS_setsid SYS_setpgid SYS_posix_spawn))',
             '(allow signal (target children))', '(allow sysctl-read)',
-            '(allow network-outbound ' + literal(self._socket) + ')',
+            *(['(allow network-outbound ' + literal(self._socket) + ')']
+              if self.profile == 'action' else []),
         ])
         environment = {'PATH': str(bindir) + ':/usr/bin:/bin', 'LANG': 'en_US.UTF-8',
-                       'HOME': str(directory), 'TMPDIR': str(directory),
-                       'CRAWL_SOCKET': self._socket}
+                       'HOME': str(directory), 'TMPDIR': str(directory)}
+        if self.profile == 'action':
+            environment['CRAWL_SOCKET'] = self._socket
         if self.manual_path:
             environment['CRAWL_MANUAL'] = str(self.manual_path)
         return sandbox, profile, executable, launcher, environment
@@ -143,6 +158,8 @@ class ShellTerminal:
                         raise ValueError('Request must be an object')
                     if fatal.done() or not accepting:
                         return
+                    if self.profile != 'action':
+                        raise ValueError('Game access is unavailable in review')
                     if request.get('type') == 'press':
                         key = request.get('key')
                         if not isinstance(key, str) or len(key) > 16:
@@ -204,7 +221,8 @@ class ShellTerminal:
             # that may already be exhausted on an ordinary desktop.
             existing = subprocess.check_output(['/bin/ps', '-U', str(os.getuid()), '-o', 'pid='])
             process_limit = len(existing.splitlines()) + 64
-            self._server = await asyncio.start_unix_server(serve, path=self._socket, limit=1024)
+            if self.profile == 'action':
+                self._server = await asyncio.start_unix_server(serve, path=self._socket, limit=1024)
             self._process = await asyncio.create_subprocess_exec(
                 sandbox, '-p', profile, executable, '-I', '-S', '-B', launcher, code, str(process_limit),
                 str(max(30, math.ceil(timeout_seconds))),
@@ -263,6 +281,15 @@ class ShellTerminal:
             await server.wait_closed()
         if self._directory and self._socket:
             Path(self._socket).unlink(missing_ok=True)
+
+    async def publish_artifacts(self):
+        """Copy completed review tools/skills to the parent-owned session store."""
+        if self.profile != 'review' or self.artifacts_path is None:
+            raise ValueError('Only a review shell with an artifact store can publish')
+        if self._busy or self._closed or self._directory is None:
+            raise RuntimeError('Review shell must be idle and open to publish')
+        from .review_files import publish_artifacts
+        publish_artifacts(self.workspace, self.artifacts_path)
 
     async def close(self):
         self._closed = True

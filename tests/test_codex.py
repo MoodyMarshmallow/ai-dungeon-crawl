@@ -9,7 +9,7 @@ from unittest.mock import patch
 import httpx2
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from ai_dungeon_crawl.contracts import GameObservation
+from ai_dungeon_crawl.contracts import GameObservation, AgentTurnRecord, ExecutionResult
 from ai_dungeon_crawl.agent.policies import CodexPolicy
 from ai_dungeon_crawl.events import observe_events
 
@@ -39,6 +39,56 @@ def events(code="pass", complete=True):
 
 
 class CodexTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stateless_wire_history_preserves_reasoning_and_real_results(self):
+        requests, logged = [], []
+        def handle(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            self.assertIn('reasoning.encrypted_content', body['include'])
+            self.assertEqual(body['truncation'], 'disabled')
+            self.assertNotIn('previous_response_id', body)
+            stream = [json.loads(line[6:]) for line in events().splitlines() if line.startswith('data: ')]
+            reasoning = {'type': 'reasoning', 'id': 'rs_private', 'summary': [],
+                         'encrypted_content': 'opaque-private-encrypted'}
+            stream.insert(1, {'type': 'response.output_item.added', 'output_index': 1,
+                              'item': {**reasoning, 'encrypted_content': None}})
+            stream.insert(2, {'type': 'response.output_item.done', 'output_index': 1, 'item': reasoning})
+            message = {'type': 'message', 'id': 'msg_1', 'role': 'assistant', 'status': 'completed',
+                       'content': [{'type': 'output_text', 'text': 'Remember this plan', 'annotations': []}]}
+            stream.insert(3, {'type': 'response.output_item.added', 'output_index': 2,
+                              'item': {**message, 'content': [], 'status': 'in_progress'}})
+            stream.insert(4, {'type': 'response.output_text.delta', 'output_index': 2,
+                              'item_id': 'msg_1', 'content_index': 0, 'delta': 'Remember this plan', 'logprobs': []})
+            stream.insert(5, {'type': 'response.output_item.done', 'output_index': 2, 'item': message})
+            stream[-1]['response']['output'].insert(0, reasoning)
+            stream[-1]['response']['output'].insert(1, message)
+            return httpx2.Response(200, headers={'content-type': 'text/event-stream'},
+                text=''.join(f'data: {json.dumps({**event, "sequence_number": i})}\n\n'
+                             for i, event in enumerate(stream)))
+        policy = CodexPolicy('test-model', auth_path=self.auth, initial_prompt='Win')
+        history = ()
+        with observe_events(lambda event, data: logged.append((event, data))):
+            for index in range(2):
+                policy.http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
+                turn = await policy.request_turn(GameObservation(0, 'secret screen'), history)
+                history += (AgentTurnRecord(index, turn, ExecutionResult(GameObservation(0, 'secret screen'),
+                    'actual output', 'actual error', 'timeout', True), ()),)
+        wire = requests[1]['input']
+        self.assertEqual(len([item for item in wire if item.get('role') == 'user']), 1)
+        reasoning = next(item for item in wire if item.get('type') == 'reasoning')
+        self.assertEqual(reasoning['encrypted_content'], 'opaque-private-encrypted')
+        self.assertEqual(reasoning['id'], 'rs_private')
+        assistant = next(item for item in wire if item.get('role') == 'assistant')
+        self.assertEqual(assistant['content'][0]['text'], 'Remember this plan')
+        self.assertEqual(assistant['id'], 'msg_1')
+        call = next(item for item in wire if item.get('type') == 'function_call')
+        result = next(item for item in wire if item.get('type') == 'function_call_output')
+        self.assertEqual(result['call_id'], call['call_id'])
+        self.assertEqual(json.loads(result['output']), {'output': 'actual output', 'error': 'actual error',
+                         'status': 'timeout', 'output_truncated': True})
+        self.assertNotIn('secret screen', json.dumps(wire))
+        self.assertNotIn('opaque-private-encrypted', json.dumps(logged))
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -106,6 +156,17 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("fake-secret", str(error.exception))
         self.assertEqual(len(requests), 1)
 
+    async def test_context_overflow_is_explicit_without_retry_or_body_leak(self):
+        calls = []
+        def handle(request):
+            calls.append(request)
+            return httpx2.Response(400, json={'error': {
+                'code': 'context_length_exceeded', 'message': 'private provider detail'}})
+        with self.assertRaisesRegex(RuntimeError, 'context window exceeded') as error:
+            await self.request(handle)
+        self.assertNotIn('private provider detail', str(error.exception))
+        self.assertEqual(len(calls), 1)
+
     async def test_api_key_login_is_rejected_before_network(self):
         self.auth.write_text('{"auth_mode":"apikey","OPENAI_API_KEY":"fake"}')
         with self.assertRaisesRegex(RuntimeError, "file-backed ChatGPT"):
@@ -135,7 +196,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             body = json.loads(request.content)
             self.assertTrue(body["stream"])
             self.assertFalse(body["store"])
-            self.assertEqual(body["reasoning"]["summary"], "auto")
+            self.assertEqual(body["reasoning"]["summary"], "detailed")
             self.assertEqual(body["reasoning"]["effort"], "high")
             return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=events())
         with observe_events(lambda event, data: seen.append((event, data))):

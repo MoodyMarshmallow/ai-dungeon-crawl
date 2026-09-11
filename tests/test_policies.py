@@ -1,5 +1,4 @@
 import asyncio
-from dataclasses import replace
 import json
 import shutil
 import sys
@@ -8,16 +7,16 @@ import unittest
 import httpx2
 from openai import AsyncOpenAI
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel, DeltaToolCall
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ai_dungeon_crawl.contracts import GameAction, ExecutionResult, AgentTurn, GameObservation, GameStep, AgentTurnRecord
-from ai_dungeon_crawl.agent.policies import CodexPolicy, PydanticPolicy, create_policy, SHELL_DESCRIPTION, INSTRUCTIONS
-from ai_dungeon_crawl.game.mock_game import MockGameSession
+from ai_dungeon_crawl.agent.policies import CodexPolicy, PydanticPolicy, create_policy, SHELL_DESCRIPTION, SYSTEM_PROMPT
+from ai_dungeon_crawl.agent.policies import _execution_feedback
+from helpers import TestGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
-from ai_dungeon_crawl.game.observation_json import observation_data
 
 
 OBSERVATION = GameObservation(0, "######\n#@...#\n######")
@@ -28,6 +27,66 @@ def response(code='await press("l")'):
 
 
 class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_validation_repair_remains_in_subsequent_conversation(self):
+        requests = []
+        def model(messages, info):
+            requests.append(list(messages))
+            index = len(requests)
+            return ModelResponse(parts=[ToolCallPart('execute_shell',
+                {'code': 123 if index == 1 else ':'}, f'call_{index}')])
+        policy = PydanticPolicy(FunctionModel(model))
+        turn = await policy.request_turn(OBSERVATION, ())
+        await policy.request_turn(OBSERVATION, (AgentTurnRecord(0, turn, ExecutionResult(OBSERVATION, 'real'), ()),))
+        parts = [p for message in requests[2] for p in message.parts]
+        self.assertEqual([p.tool_call_id for p in parts if isinstance(p, ToolCallPart)], ['call_1', 'call_2'])
+        self.assertEqual([p.tool_call_id for p in parts if isinstance(p, RetryPromptPart)], ['call_1'])
+        returns = [p for p in parts if isinstance(p, ToolReturnPart)]
+        self.assertEqual([p.tool_call_id for p in returns], ['call_2'])
+        self.assertEqual(json.loads(returns[0].content)['output'], 'real')
+
+    async def test_phase_contexts_are_fresh(self):
+        def model(messages, info):
+            self.assertFalse(any(isinstance(message, ModelResponse) for message in messages))
+            return response(':')
+        for profile in ('action', 'review', 'action'):
+            await PydanticPolicy(FunctionModel(model), profile=profile).request_turn(OBSERVATION, ())
+
+    async def test_shell_descriptions_prefer_ripgrep_for_both_profiles(self):
+        descriptions = {}
+
+        def model(messages, info):
+            descriptions[current_profile] = info.output_tools[0].description
+            return response(':')
+
+        for current_profile in ('action', 'review'):
+            await PydanticPolicy(FunctionModel(model), profile=current_profile).request_turn(
+                OBSERVATION, ())
+
+        for description in descriptions.values():
+            self.assertIn('Prefer ripgrep (rg) for searching file contents when available.',
+                          description)
+        self.assertEqual(set(descriptions), {'action', 'review'})
+
+    async def test_context_overflow_propagates_without_retry_or_history_loss(self):
+        fail = False
+        calls = []
+        def model(messages, info):
+            calls.append(list(messages))
+            if fail:
+                raise RuntimeError('context window exceeded')
+            return response(':')
+        policy = PydanticPolicy(FunctionModel(model))
+        turn = await policy.request_turn(OBSERVATION, ())
+        history = (AgentTurnRecord(0, turn, ExecutionResult(OBSERVATION, 'result'), ()),)
+        fail = True
+        with self.assertRaisesRegex(RuntimeError, 'context window exceeded'):
+            await policy.request_turn(OBSERVATION, history)
+        self.assertEqual(len(calls), 2)
+        fail = False
+        await policy.request_turn(OBSERVATION, history)
+        self.assertEqual([p.content for m in calls[2] for p in m.parts if isinstance(p, ToolReturnPart)],
+                         [p.content for m in calls[1] for p in m.parts if isinstance(p, ToolReturnPart)])
+
     async def test_output_tool_preserves_timeout(self):
         def model(messages, info):
             schema = info.output_tools[0].parameters_json_schema["properties"]["timeout_ms"]
@@ -50,8 +109,8 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(info.function_tools, [])
             self.assertEqual([tool.name for tool in info.output_tools], ["execute_shell"])
             self.assertTrue(info.output_tools[0].description.startswith(SHELL_DESCRIPTION))
-            self.assertLess(len(INSTRUCTIONS.split()), 40)
-            self.assertNotIn('style_runs', INSTRUCTIONS)
+            self.assertLess(len(SYSTEM_PROMPT.split()), 40)
+            self.assertNotIn('style_runs', SYSTEM_PROMPT)
             return response('raise RuntimeError("must not execute inside policy")')
 
         policy = PydanticPolicy(FunctionModel(model))
@@ -97,38 +156,62 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             await PydanticPolicy(FunctionModel(model), timeout_seconds=0.05).request_turn(OBSERVATION, ())
         self.assertTrue(cancelled.is_set())
 
-    async def test_explicit_bounded_history_and_no_hidden_history(self):
+    async def test_full_history_without_automatic_screens(self):
         prompts = []
 
         def model(messages, info):
             user_parts = [part for message in messages for part in message.parts
                           if isinstance(part, UserPromptPart)]
             self.assertEqual(len(user_parts), 1)
-            prompts.append(json.loads(user_parts[0].content))
-            return response("pass")
+            self.assertEqual(user_parts[0].content, 'Win')
+            prompts.append([part for message in messages for part in message.parts
+                            if isinstance(part, ToolReturnPart)])
+            index = len(prompts) - 1
+            self.assertEqual(len(prompts[-1]), index)
+            for number, part in enumerate(prompts[-1]):
+                self.assertEqual(part.tool_call_id, f'call_{number}')
+                self.assertEqual(json.loads(part.content), {
+                    'output': 'feedback' * 10000, 'error': 'failure',
+                    'status': 'error', 'output_truncated': True})
+            prior = [message for message in messages if isinstance(message, ModelResponse)]
+            self.assertEqual(len(prior), index)
+            for message in prior:
+                self.assertEqual(message.parts[0].content, 'assistant text')
+                self.assertEqual(message.parts[1].signature, 'opaque-private')
+                self.assertEqual(message.provider_details, {'opaque': 'preserved'})
+            return ModelResponse(parts=[TextPart('assistant text'),
+                ThinkingPart('summary', signature='opaque-private', id='rs_1', provider_name='openai'),
+                ToolCallPart('execute_shell', {'code': 'pass'}, f'call_{index}')],
+                provider_details={'opaque': 'preserved'})
 
         after = GameObservation(1, "next screen")
         record = AgentTurnRecord(0, AgentTurn("pass"), ExecutionResult(after, "feedback"),
                             (GameStep(OBSERVATION, GameAction("l"), after),))
-        history = (record, replace(record, id=1))
-        policy = PydanticPolicy(FunctionModel(model), history_turns=1)
-        await policy.request_turn(after, history)
-        await policy.request_turn(OBSERVATION, ())
-        self.assertEqual(prompts[0]["history"][0]["id"], 1)
-        self.assertEqual(prompts[0]["history"][0]["execution"]["output"], "feedback")
-        self.assertEqual(prompts[0]["history"][0]["executed_keys"], ["l"])
-        self.assertEqual(prompts[0]["omitted_turns"], 1)
-        self.assertEqual(prompts[1]["history"], [])
-        self.assertEqual(prompts[0]["observation"], observation_data(after))
-        self.assertNotIn('observation', prompts[0]['history'][0]['execution'])
-        self.assertEqual(prompts[1]["observation"], observation_data(OBSERVATION))
+        history = ()
+        policy = PydanticPolicy(FunctionModel(model), initial_prompt='Win')
+        for index in range(7):
+            turn = await policy.request_turn(after, history)
+            history += (AgentTurnRecord(index, turn, ExecutionResult(after,
+                'feedback' * 10000, 'failure', 'error', True), record.steps),)
+        with self.assertRaisesRegex(ValueError, 'out of sync'):
+            await policy.request_turn(OBSERVATION, ())
 
-    async def test_large_current_screen_is_rejected_not_truncated(self):
+    async def test_only_explicit_observe_output_is_in_context(self):
+        before = GameObservation(1, 'UNREQUESTED_OLD_SCREEN')
+        current = GameObservation(2, 'UNREQUESTED_CURRENT_SCREEN' * 10000)
+        record = AgentTurnRecord(0, AgentTurn('crawl observe'),
+                                ExecutionResult(before, 'EXPLICIT_OBSERVE_OUTPUT'), ())
+        prompt = _execution_feedback(record.execution)
+        self.assertIn('EXPLICIT_OBSERVE_OUTPUT', prompt)
+        self.assertNotIn('UNREQUESTED', prompt)
+        self.assertNotIn('observation', json.loads(prompt))
+
+    async def test_large_initial_prompt_is_sent_not_truncated(self):
         def model(messages, info):
-            self.fail("Oversized context must fail before contacting the model")
+            self.assertEqual(messages[0].parts[0].content, 'x' * 70000)
+            return response('pass')
 
-        with self.assertRaisesRegex(ValueError, "context budget"):
-            await PydanticPolicy(FunctionModel(model), max_context_chars=100).request_turn(OBSERVATION, ())
+        await PydanticPolicy(FunctionModel(model), initial_prompt='x' * 70000).request_turn(OBSERVATION, ())
 
     async def test_real_openai_client_wire_format_without_network(self):
         requests = []
@@ -191,7 +274,8 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             user_parts = [part for message in messages for part in message.parts
                           if isinstance(part, UserPromptPart)]
             self.assertEqual(len(user_parts), 1)
-            prompts.append(json.loads(user_parts[0].content))
+            prompts.append([part for message in messages for part in message.parts
+                            if isinstance(part, ToolReturnPart)])
             return response('crawl press l\ncrawl press l' if len(prompts) == 1
                             else 'crawl press l')
 
@@ -199,12 +283,13 @@ class PydanticPolicyTests(unittest.IsolatedAsyncioTestCase):
             call = model(messages, info).parts[0]
             yield {0: DeltaToolCall(name=call.tool_name, json_args=json.dumps(call.args))}
 
-        result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
+        result = await EpisodeRunner(TestGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual([len(turn.steps) for turn in result.turns], [2, 1])
         self.assertEqual(len(prompts), 2)
-        self.assertEqual(prompts[1]["observation"]["id"], 2)
-        self.assertEqual(prompts[1]["history"][0]["executed_keys"], ["l", "l"])
+        self.assertEqual(len(prompts[1]), 1)
+        self.assertEqual(json.loads(prompts[1][0].content), {
+            'output': '', 'error': None, 'status': 'ok', 'output_truncated': False})
 
 
 class RoutingTests(unittest.TestCase):

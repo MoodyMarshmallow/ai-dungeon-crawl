@@ -1,4 +1,6 @@
 import { lineCells } from "./unicode";
+import type { Observation } from "./types";
+import { terminalText } from "./rendering";
 
 const colors: Record<string, string> = {
   black: "#000000", red: "#cc0000", green: "#4e9a06", brown: "#c4a000",
@@ -52,7 +54,7 @@ function escape(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 function color(value: string, fallback: string): string {
-  return value === "default" ? fallback : colors[value] ?? `#${value}`;
+  return !validColor(value) || value === "default" ? fallback : colors[value] ?? `#${value}`;
 }
 function screenHtml(value: OutputObservation): string {
   const rows = value.rows.map((row, index) => lineCells(row).map(cell => {
@@ -71,4 +73,49 @@ export function executionOutputHtml(source: string): string {
     const observation = parseOutputObservation(line);
     return observation ? screenHtml(observation) : escape(line);
   }).join("\n");
+}
+
+/** Render the execution's captured final screen, separate from model-visible output. */
+export function finalObservationHtml(observation: Observation): string {
+  const lines = terminalText(observation.screen).split("\n");
+  const width = observation.width || Math.max(...lines.map(line => lineCells(line).reduce((n, cell) => n + cell.width, 0)), 1);
+  const height = observation.height || lines.length;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width * height > 250000) return "";
+  const rows = Array.from({ length: height }, (_, row) => {
+    const cells = lineCells(lines[row] ?? "").filter(cell => cell.column + cell.width <= width);
+    return cells.map(cell => cell.text).join("") + " ".repeat(width - cells.reduce((n, cell) => n + cell.width, 0));
+  });
+  const plain: Palette = { fg: "default", bg: "default", bold: false, italics: false, underline: false, reverse: false, blink: false, cursor: false };
+  const palette = [plain];
+  const styles = Array.from({ length: height }, () => Array<number>(width).fill(0));
+  for (const run of observation.styles ?? []) {
+    if (!styles[run.row]) continue;
+    palette.push({ fg: run.fg, bg: run.bg, ...Object.fromEntries(flags.map(flag => [flag, flag === "cursor" ? false : run[flag]])) } as Palette);
+    for (let col = Math.max(0, run.col); col < Math.min(width, run.col + run.length); col++) styles[run.row]![col] = palette.length - 1;
+  }
+  if (observation.cursor) {
+    const [row, col] = observation.cursor;
+    if (styles[row]?.[col] !== undefined) {
+      palette.push({ ...palette[styles[row]![col]!]!, cursor: true });
+      styles[row]![col] = palette.length - 1;
+    }
+  }
+  const value = { id: observation.id, ended: observation.ended, width, height, rows, palette, styles };
+  // The same renderer escapes text and validates colors.
+  return screenHtml(value);
+}
+
+/** Render only the automatic final result, retaining actionable execution details. */
+export function finalResultHtml(
+  observation: Observation | undefined,
+  status: string,
+  error: string | null | undefined,
+  outputTruncated: boolean,
+): string {
+  let html = observation ? finalObservationHtml(observation) : "";
+  if (error) html += `<div class="result-error">${escape(error)}</div>`;
+  if (outputTruncated) html += `<div class="result-status">Output truncated</div>`;
+  if (!observation && !error && status !== "ok" && status !== "running")
+    html += `<div class="result-status">${escape(status)}</div>`;
+  return html;
 }

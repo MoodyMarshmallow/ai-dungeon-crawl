@@ -61,8 +61,12 @@
                     <option value="high">High</option>
                     <option value="xhigh">Extra high</option>
                   </select>
-                  <label for="setting-turns">Turn limit</label>
-                  <input id="setting-turns" name="max_turns" type="number" min="0" max="9007199254740991" step="1" required />
+                  <label for="setting-turns">Action turn limit</label>
+                  <input id="setting-turns" name="action_turn_limit" type="number" min="0" max="9007199254740991" step="1" required />
+                  <label for="setting-review-turns">Review turn limit</label>
+                  <input id="setting-review-turns" name="review_turn_limit" type="number" min="0" max="9007199254740991" step="1" required />
+                  <label for="setting-episodes">Episode limit</label>
+                  <input id="setting-episodes" name="episode_limit" type="number" min="1" max="9007199254740991" step="1" required />
                 </fieldset>
                 <p id="settings-status" role="status">Applies when you press Start.</p>
                 <button id="save-defaults" type="button" disabled>Save as default</button>

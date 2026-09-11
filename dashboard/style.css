@@ -38,7 +38,7 @@ body {
 button {
   font: inherit;
   border: 1px solid #494949;
-  border-radius: 3px;
+  border-radius: 0;
   background: #262626;
   color: var(--model);
   padding: 4px 14px;
@@ -165,7 +165,7 @@ button:focus-visible,
   background: var(--game);
   color: var(--model);
   border: 1px solid #494949;
-  border-radius: 3px;
+  border-radius: 0;
   padding: 6px 8px;
   font: inherit;
 }
@@ -209,7 +209,7 @@ button:focus-visible,
 }
 .activity-turn {
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 14px;
   margin-bottom: 14px;
 }
@@ -230,6 +230,10 @@ button:focus-visible,
 .activity-turn[open] > .turn-title::before { content: "▾"; }
 .activity-turn[open] > .turn-title { margin-bottom: 16px; }
 .turn-number { white-space: nowrap; flex: none; }
+.activity-turn { border-left: 3px solid #b26d23; padding-left: 12px; }
+.activity-turn[data-mode="review"] { border-left-color: #8534d6; }
+.mode-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: #aaa7a1; font-size: 12px; }
+.mode-divider::before, .mode-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .turn-heading-preview {
   min-width: 0;
   overflow: hidden;
@@ -329,7 +333,7 @@ button:focus-visible,
   margin: 0;
   padding: 12px;
   border: 1px solid #363636;
-  border-radius: 4px;
+  border-radius: 0;
   background: #141414;
   white-space: pre-wrap;
 }

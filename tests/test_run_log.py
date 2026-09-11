@@ -15,6 +15,7 @@ from ai_dungeon_crawl.cli import run_episode, new_run_directory
 from ai_dungeon_crawl.events import emit, events_enabled, observe_events, record_events
 from ai_dungeon_crawl.agent.policies import PydanticPolicy
 from ai_dungeon_crawl.run_log import episode_log
+from helpers import TestGameSession
 
 
 class RunLogTests(unittest.TestCase):
@@ -172,8 +173,9 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
         display = []
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "run"
-            with patch("ai_dungeon_crawl.cli.create_policy", return_value=policy):
-                result = await run_episode("codex", "test-model", 1, game="mock",
+            with patch("ai_dungeon_crawl.cli.create_policy", return_value=policy), \
+                    patch("ai_dungeon_crawl.cli.create_game", return_value=TestGameSession()):
+                result = await run_episode("codex", "test-model", 1,
                     run_dir=directory, sink=lambda event, data: display.append((event, data)))
             raw = (directory / "model.jsonl").read_text()
             rows = [json.loads(line) for line in raw.splitlines()]
@@ -201,9 +203,10 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_setup_failure_is_logged_without_exception_body(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
-            with patch("ai_dungeon_crawl.cli.create_policy", side_effect=ValueError("secret-token")):
+            with patch("ai_dungeon_crawl.cli.create_policy", side_effect=ValueError("secret-token")), \
+                    patch("ai_dungeon_crawl.cli.create_game", return_value=TestGameSession()):
                 with self.assertRaises(ValueError):
-                    await run_episode("codex", "test", 1, game="mock", run_dir=directory)
+                    await run_episode("codex", "test", 1, run_dir=directory)
             raw = (directory / "model.jsonl").read_text()
             self.assertNotIn("secret-token", raw)
             self.assertEqual(json.loads(raw.splitlines()[-1])["data"], {"status": "error", "error": "ValueError"})
@@ -218,8 +221,9 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.Event().wait()
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
-            with patch("ai_dungeon_crawl.cli.create_policy", return_value=WaitingPolicy()):
-                task = asyncio.create_task(run_episode("codex", "test", 1, game="mock", run_dir=directory))
+            with patch("ai_dungeon_crawl.cli.create_policy", return_value=WaitingPolicy()), \
+                    patch("ai_dungeon_crawl.cli.create_game", return_value=TestGameSession()):
+                task = asyncio.create_task(run_episode("codex", "test", 1, run_dir=directory))
                 await asyncio.wait_for(started.wait(), 5)
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):

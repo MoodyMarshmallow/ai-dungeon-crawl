@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
@@ -29,7 +30,8 @@ class CodexResponsesModel(OpenAIResponsesModel):
         for key in ("max_tokens", "temperature", "top_p"):
             settings.pop(key, None)
         settings["openai_store"] = False
-        settings["openai_send_reasoning_ids"] = False
+        settings["openai_send_reasoning_ids"] = True
+        settings["openai_truncation"] = "disabled"
         async with super().request_stream(messages, settings, model_request_parameters, run_context) as stream:
             yield stream
             response = stream.get()
@@ -81,8 +83,19 @@ async def codex_model(model_name, auth_path=None, http_client=None):
         default_headers={"ChatGPT-Account-Id": account},
     ) as client:
         try:
-            yield CodexResponsesModel(model_name, provider=OpenAIProvider(openai_client=client))
+            # Subscription aliases may be newer than Pydantic's model catalog.
+            # Stateless continuation requires the encrypted reasoning payload.
+            yield CodexResponsesModel(model_name, provider=OpenAIProvider(openai_client=client),
+                profile=OpenAIModelProfile(openai_supports_encrypted_reasoning_content=True))
         except ModelHTTPError as exc:
+            body = exc.body if isinstance(exc.body, dict) else {}
+            error = body.get('error', body)
+            if isinstance(error, dict) and error.get('code') in {
+                'context_length_exceeded', 'context_window_exceeded',
+            }:
+                raise RuntimeError(
+                    "Codex context window exceeded. Conversation was not truncated; no fallback."
+                ) from None
             raise RuntimeError(
                 f"Codex subscription request failed (HTTP {exc.status_code}). "
                 "Check model access and usage limits; for expired authentication run codex login. "

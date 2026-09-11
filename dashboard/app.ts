@@ -2,7 +2,7 @@ import type { State } from "./types";
 import { TerminalDisplay } from "./displays";
 import { activityEntries, turnSummary } from "./transcript";
 import { codeHtml, markdownHtml } from "./rendering";
-import { executionOutputHtml } from "./observation-output";
+import { finalResultHtml } from "./observation-output";
 
 const $ = (id: string) => document.getElementById(id)!;
 const button = (id: string) => $(id) as HTMLButtonElement;
@@ -10,6 +10,9 @@ const game = new TerminalDisplay($("screen"), true);
 const shell = new TerminalDisplay($("shell-terminal"));
 const entries = new Map<string, HTMLElement>();
 const turns = new Map<number, HTMLDetailsElement>();
+// Turns opened by the user stay open when a later turn arrives. This is
+// intentionally per-run UI state, rather than part of the streamed state.
+const protectedTurns = new Set<number>();
 let current: State | null = null;
 let connected = false,
   pending = false;
@@ -20,12 +23,17 @@ const settingsForm = $("settings-form") as HTMLFormElement;
 const modelInput = $("setting-model") as HTMLSelectElement;
 const reasoningInput = $("setting-reasoning") as HTMLSelectElement;
 const turnsInput = $("setting-turns") as HTMLInputElement;
+const reviewTurnsInput = $("setting-review-turns") as HTMLInputElement;
+const episodesInput = $("setting-episodes") as HTMLInputElement;
+const formLimits = () => ({ action_turn_limit: Number(turnsInput.value), review_turn_limit: Number(reviewTurnsInput.value), episode_limit: Number(episodesInput.value) });
 
 function syncSettings(state: State) {
   if (savedSettings &&
       state.config.model === savedSettings.model &&
       state.config.reasoning_effort === savedSettings.reasoning_effort &&
-      state.config.max_turns === savedSettings.max_turns) {
+      state.config.action_turn_limit === savedSettings.action_turn_limit &&
+      state.config.review_turn_limit === savedSettings.review_turn_limit &&
+      state.config.episode_limit === savedSettings.episode_limit) {
     settingsDirty = false;
     savedSettings = null;
   }
@@ -35,7 +43,9 @@ function syncSettings(state: State) {
     modelInput.add(new Option(state.config.model, state.config.model));
   modelInput.value = state.config.model ?? "";
   reasoningInput.value = state.config.reasoning_effort === "default" ? "low" : state.config.reasoning_effort;
-  turnsInput.value = String(state.config.max_turns);
+  turnsInput.value = String(state.config.action_turn_limit ?? state.config.max_turns ?? 3);
+  reviewTurnsInput.value = String(state.config.review_turn_limit ?? 3);
+  episodesInput.value = String(state.config.episode_limit ?? 1);
   if (state.config.reasoning_effort === "default") settingsDirty = true;
 }
 settingsForm.addEventListener("input", () => {
@@ -70,11 +80,12 @@ function render(state: State) {
   if (newRun) {
     entries.clear();
     turns.clear();
+    protectedTurns.clear();
     $("activity").replaceChildren();
     lastRun = state.run_id;
   }
   game.setObservation(state.observation);
-  shell.setSubmissions(state.submissions);
+  shell.setSubmissions(state.submissions.filter(submission => (submission.episode ?? 1) === state.episode));
   const items = activityEntries(state);
   const retained = new Set(items.map((item) => item.id));
   for (const [id, element] of entries)
@@ -88,29 +99,46 @@ function render(state: State) {
       element.remove();
       turns.delete(turn);
     }
+  for (const turn of protectedTurns)
+    if (!retainedTurns.has(turn)) protectedTurns.delete(turn);
   let previousTurn: HTMLElement | null = null;
+  let previousPhase = "";
+  // Dividers are lightweight; turn elements remain intact to preserve manual disclosure.
+  for (const divider of $("activity").querySelectorAll(".mode-divider")) divider.remove();
   const previousEntries = new Map<number, HTMLElement>();
   for (const item of items) {
+    const mode = item.mode ?? "action";
+    const phase = `${item.episode ?? 1}:${mode}`;
     let group = turns.get(item.turn);
     if (!group) {
       group = document.createElement("details");
       group.className = "activity-turn";
+      group.dataset.mode = mode;
       const title = document.createElement("summary");
       title.className = "turn-title";
       title.id = `turn-${item.turn}`;
       const number = document.createElement("span");
       number.className = "turn-number";
       number.textContent = `Turn ${item.turn + 1}`;
+      number.dataset.mode = mode;
+      number.setAttribute("aria-label", `Turn ${item.turn + 1}, ${mode} agent, episode ${item.episode ?? 1}`);
       const heading = document.createElement("span");
       heading.className = "turn-heading-preview";
       title.append(number, heading);
       group.setAttribute("aria-labelledby", title.id);
       group.append(title);
+      // A native summary click is emitted for both mouse and keyboard
+      // activation. At this point the default disclosure action has not run,
+      // so `open === false` identifies an explicit open intent. Programmatic
+      // `open` changes do not emit this event.
+      title.addEventListener("click", () => {
+        if (!group!.open) protectedTurns.add(item.turn);
+      });
       // Advance disclosure only when a new latest turn appears, not on streamed updates.
       const latestTurn = Math.max(-1, ...turns.keys());
       if (item.turn > latestTurn) {
         const previous = turns.get(latestTurn);
-        if (previous) previous.open = false;
+        if (previous && !protectedTurns.has(latestTurn)) previous.open = false;
         group.open = true;
       }
       turns.set(item.turn, group);
@@ -120,6 +148,14 @@ function render(state: State) {
     text(heading, summary.startsWith(`Turn ${item.turn + 1}: `)
       ? summary.slice(`Turn ${item.turn + 1}: `.length) : "");
     if (previousTurn !== group) {
+      if (previousPhase !== phase) {
+        const divider = document.createElement("div");
+        divider.className = "mode-divider";
+        divider.textContent = mode === "review" ? "Review agent started" : "Action agent started";
+        $("activity").insertBefore(divider, previousTurn ? previousTurn.nextSibling : $("activity").firstChild);
+        previousTurn = divider;
+        previousPhase = phase;
+      }
       const next: ChildNode | null = previousTurn ? previousTurn.nextSibling : $("activity").firstChild;
       if (next !== group) $("activity").insertBefore(group, next);
       previousTurn = group;
@@ -133,6 +169,7 @@ function render(state: State) {
     element.setAttribute("aria-label", item.label);
     if (
       element.dataset.source !== item.text ||
+      element.dataset.observation !== String(item.observation?.id ?? "") ||
       element.dataset.format !== item.format
     ) {
       if (item.className === "model-part tool") {
@@ -150,13 +187,21 @@ function render(state: State) {
       } else if (item.className === "result") {
         if (!element.firstChild) {
           const summary = document.createElement("summary");
-          summary.textContent = "Output";
+          summary.textContent = "Final result";
+          // As with turn summaries, only an explicit open action should
+          // protect the containing turn; streamed updates and programmatic
+          // disclosure changes must not count as user interaction.
+          summary.addEventListener("click", () => {
+            if (!(element as HTMLDetailsElement).open) protectedTurns.add(item.turn);
+          });
           const output = document.createElement("div");
           output.className = "result-output";
           element.append(summary, output);
         }
         // Retain disclosure state and keyboard focus while output streams.
-        (element.lastElementChild as HTMLElement).innerHTML = executionOutputHtml(item.text);
+        (element.lastElementChild as HTMLElement).innerHTML = item.mode === "review" ? codeHtml(item.text, "text") : finalResultHtml(
+          item.observation, item.status ?? "", item.error, item.outputTruncated ?? false,
+        );
       } else if (item.format === "text") text(element, item.text);
       else
         element.innerHTML =
@@ -164,6 +209,7 @@ function render(state: State) {
             ? markdownHtml(item.text)
             : codeHtml(item.text, item.format);
       element.dataset.source = item.text;
+      element.dataset.observation = String(item.observation?.id ?? "");
       element.dataset.format = item.format;
     }
     const previous = previousEntries.get(item.turn);
@@ -193,7 +239,7 @@ async function command(path: string) {
         method: "POST",
         headers: { "X-Dashboard-Request": "1", "Content-Type": "application/json" },
         body: JSON.stringify({ model: modelInput.value, reasoning_effort: reasoningInput.value,
-          max_turns: Number(turnsInput.value) }),
+          ...formLimits() }),
       });
       if (!response.ok) throw new Error(await response.text());
       savedSettings = await response.json();
@@ -208,7 +254,7 @@ async function command(path: string) {
         body: JSON.stringify({
           model: modelInput.value.trim() || null,
           reasoning_effort: reasoningInput.value,
-          max_turns: Number(turnsInput.value),
+          ...formLimits(),
         }),
       });
       if (!response.ok) throw new Error(await response.text());

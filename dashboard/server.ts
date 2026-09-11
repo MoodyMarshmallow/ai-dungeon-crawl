@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import type { Subprocess } from "bun";
 import type { Config, HarnessEvent } from "./types";
 import { reasoningEfforts } from "./types";
-import { loadDefaults, saveDefaults, type Settings } from "./defaults";
+import { loadDefaults, saveDefaults, limits, type Settings } from "./defaults";
 import { applyEvent, emptyState } from "./state";
 import { TileJournal, tileAssets, tileEvents, tilePage, tileScript, tileStyle } from "./tiles";
 
@@ -31,21 +31,20 @@ export class Dashboard {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("Settings must be a JSON object");
     const fields = value as Record<string, unknown>;
-    if (Object.keys(fields).some(key => !["model", "reasoning_effort", "max_turns"].includes(key)))
+    if (Object.keys(fields).some(key => !["model", "reasoning_effort", "max_turns", "action_turn_limit", "review_turn_limit", "episode_limit"].includes(key)))
       throw new Error("Unknown setting");
-    const { model, reasoning_effort, max_turns } = fields;
+    const { model, reasoning_effort } = fields;
+    const selectedLimits = limits(fields);
     if (model !== null && (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f\x7f]/.test(model)))
       throw new Error("Enter a model name (at most 200 characters)");
     if (!reasoningEfforts.includes(reasoning_effort as Config["reasoning_effort"]))
       throw new Error("Choose a supported reasoning strength");
-    if (typeof max_turns !== "number" || !Number.isSafeInteger(max_turns) || max_turns < 0)
-      throw new Error("Turn limit must be a nonnegative whole number");
     const selectedModel = model === null ? (this.config.backend === "codex" ? "gpt-5.6-luna" : null) : (model as string).trim();
     if (!selectedModel) throw new Error("This provider requires a model name");
     if (this.config.backend === "pydantic" && reasoning_effort !== "default" && !/^openai(?:-responses|-chat)?:/.test(selectedModel))
       throw new Error("Reasoning strength requires a Codex or OpenAI model; choose Provider default for other providers");
     if (this.active) throw new Error("An episode is already running");
-    this.config = { ...this.config, model: selectedModel, reasoning_effort: reasoning_effort as Config["reasoning_effort"], max_turns };
+    this.config = { ...this.config, model: selectedModel, reasoning_effort: reasoning_effort as Config["reasoning_effort"], ...selectedLimits, max_turns: selectedLimits.action_turn_limit };
     this.state.config = this.config;
     this.revision++;
   }
@@ -55,7 +54,7 @@ export class Dashboard {
     if (this.child) return false;
     this.stopping = false;
     this.state = emptyState(this.config, this.state.run_id + 1);
-    this.tiles.reset(this.state.run_id);
+    this.tiles.reset(this.tiles.run + 1);
     Object.assign(this.state, {
       status: "running",
       phase: "Starting game",
@@ -76,14 +75,16 @@ export class Dashboard {
       "-u",
       "-m",
       "ai_dungeon_crawl.dashboard_bridge",
-      "--game",
-      this.config.game,
       "--policy",
       this.config.backend,
       "--reasoning-effort",
       this.config.reasoning_effort,
-      "--max-turns",
-      String(this.config.max_turns),
+      "--action-turn-limit",
+      String(this.config.action_turn_limit ?? this.config.max_turns ?? 3),
+      "--review-turn-limit",
+      String(this.config.review_turn_limit ?? 3),
+      "--episode-limit",
+      String(this.config.episode_limit ?? 1),
     ];
     if (this.config.crawl_path) args.push("--crawl-path", this.config.crawl_path);
     if (this.config.manual_path) args.push("--manual-path", this.config.manual_path);
@@ -107,6 +108,8 @@ export class Dashboard {
   }
 
   accept(message: HarnessEvent) {
+    if (message.event === "mode.changed" && message.data.mode === "action" && message.data.episode !== this.state.episode)
+      this.tiles.reset(this.tiles.run + 1);
     if (message.event === "game.tiles") {
       this.tiles.append(message.data.messages);
       return;
@@ -361,8 +364,10 @@ export function dashboardOptions(args: string[], defaults?: Settings) {
       port: { type: "string", default: "8765" },
       "reasoning-effort": { type: "string" },
       "max-turns": { type: "string" },
+      "action-turn-limit": { type: "string" },
+      "review-turn-limit": { type: "string" },
+      "episode-limit": { type: "string" },
       "reasoning-summary": { type: "boolean" },
-      game: { type: "string", default: "dcss" },
       "crawl-path": { type: "string" },
       "manual-path": { type: "string" },
     },
@@ -371,12 +376,14 @@ export function dashboardOptions(args: string[], defaults?: Settings) {
   const saved = backend === "codex" ? defaults : undefined;
   const model = values.model ?? saved?.model ?? (backend === "codex" ? "gpt-5.6-luna" : null);
   const port = Number(values.port),
-    max_turns = Number(values["max-turns"] ?? saved?.max_turns ?? 3);
+    max_turns = Number(values["action-turn-limit"] ?? values["max-turns"] ?? saved?.action_turn_limit ?? saved?.max_turns ?? 3);
+  const selectedLimits = limits({ action_turn_limit: max_turns,
+    review_turn_limit: Number(values["review-turn-limit"] ?? saved?.review_turn_limit ?? 3),
+    episode_limit: Number(values["episode-limit"] ?? saved?.episode_limit ?? 1) });
   const reasoning_effort = (values["reasoning-effort"] ?? saved?.reasoning_effort ??
     (backend === "codex" ? "low" : "default")) as Config["reasoning_effort"];
   if (
     !["codex", "pydantic"].includes(backend) ||
-    !["dcss", "mock"].includes(values.game!) ||
     !Number.isInteger(port) ||
     port < 1 ||
     port > 65535 ||
@@ -394,7 +401,7 @@ export function dashboardOptions(args: string[], defaults?: Settings) {
     model,
     reasoning_effort,
     max_turns,
-    game: values.game as Config["game"],
+    ...selectedLimits,
     crawl_path: values["crawl-path"] ? resolve(values["crawl-path"]) : undefined,
     manual_path: values["manual-path"] ? resolve(values["manual-path"]) : undefined,
     reasoning_summary: values["reasoning-summary"] ?? backend === "codex",

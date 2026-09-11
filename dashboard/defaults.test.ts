@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadDefaults, saveDefaults, type Settings } from "./defaults";
+import { loadDefaults, saveDefaults, validateDefaults, type Settings } from "./defaults";
 import { Dashboard, dashboardOptions, startServer } from "./server";
 
 test("saved defaults survive reload and explicit CLI options win", () => {
@@ -13,14 +13,14 @@ test("saved defaults survive reload and explicit CLI options win", () => {
     expect(dashboardOptions([]).config.reasoning_effort).toBe("low");
     const settings: Settings = { model: "gpt-5.6-sol", reasoning_effort: "high", max_turns: 20 };
     saveDefaults(path, settings);
-    expect(loadDefaults(path)).toEqual(settings);
+    expect(loadDefaults(path)).toEqual(validateDefaults(settings));
     expect(dashboardOptions([], loadDefaults(path)).config).toMatchObject(settings);
     expect(dashboardOptions(["--model", "gpt-5.6-terra", "--reasoning-effort", "low", "--max-turns", "8"], loadDefaults(path)).config)
       .toMatchObject({ model: "gpt-5.6-terra", reasoning_effort: "low", max_turns: 8 });
     for (const invalid of [{ ...settings, reasoning_effort: "default" }, { ...settings, max_turns: -1 },
                           { ...settings, model: "invalid" }, { ...settings, extra: true }])
       expect(() => saveDefaults(path, invalid)).toThrow();
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(settings);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(validateDefaults(settings));
   } finally { rmSync(directory, { recursive: true }); }
 });
 
@@ -39,11 +39,11 @@ test("save defaults endpoint uses control safeguards and updates next-run settin
     expect((await request({ "X-Dashboard-Request": "1", Origin: "https://elsewhere.example" })).status).toBe(403);
     expect(loadDefaults(path)).toBeUndefined();
     expect((await request({ "X-Dashboard-Request": "1" })).status).toBe(200);
-    expect(loadDefaults(path)).toEqual(settings);
+    expect(loadDefaults(path)).toEqual(validateDefaults(settings));
     expect(dashboard.config.model).toBe("gpt-5.6-terra");
     expect(dashboard.child).toBeNull();
     expect((await request({ "X-Dashboard-Request": "1" }, { ...settings, max_turns: -1 })).status).toBe(400);
-    expect(loadDefaults(path)).toEqual(settings);
+    expect(loadDefaults(path)).toEqual(validateDefaults(settings));
   } finally { await server.stop(true); rmSync(directory, { recursive: true }); }
 });
 

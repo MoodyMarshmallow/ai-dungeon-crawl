@@ -8,7 +8,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.function import FunctionModel, DeltaToolCall, DeltaThinkingPart
 
 from ai_dungeon_crawl.contracts import GameObservation
-from ai_dungeon_crawl.game.mock_game import MockGameSession
+from helpers import TestGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
 from ai_dungeon_crawl.events import observe_events
 from ai_dungeon_crawl.agent.policies import PydanticPolicy
@@ -76,7 +76,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 yield {0: DeltaToolCall(name="execute_shell", json_args=json.dumps({
                     "code": 'crawl press l\ncrawl press l\ncrawl press l\nprintf moved'
                 }), tool_call_id="step")}
-            result = await EpisodeRunner(MockGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
+            result = await EpisodeRunner(TestGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
         kinds = [event for event, _ in seen]
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual(kinds.count("game.step"), 3)

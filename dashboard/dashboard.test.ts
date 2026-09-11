@@ -8,16 +8,14 @@ const config: Config = {
   model: "invalid-test-provider:model",
   reasoning_effort: "default",
   max_turns: 3,
-  game: "mock",
   reasoning_summary: false,
 };
 
-test("dashboard launches actual Crawl by default and permits explicit mock development", () => {
-  expect(dashboardOptions([]).config.game).toBe("dcss");
-  expect(dashboardOptions(["--game", "mock"]).config.game).toBe("mock");
+test("dashboard launches actual Crawl and rejects obsolete game selection", () => {
+  expect(dashboardOptions([]).config).not.toHaveProperty("game");
   expect(dashboardOptions(["--crawl-path", "/tmp/crawl-custom"]).config.crawl_path).toBe("/tmp/crawl-custom");
   expect(dashboardOptions(["--manual-path", "/tmp/manual-custom.rst"]).config.manual_path).toBe("/tmp/manual-custom.rst");
-  expect(() => dashboardOptions(["--game", "unknown"])).toThrow();
+  expect(() => dashboardOptions(["--game", "dcss"])).toThrow();
   expect(dashboardOptions(["--reasoning-effort", "high", "--max-turns", "5"]).config.reasoning_effort).toBe("high");
   expect(() => dashboardOptions(["--reasoning-effort", "bogus"])).toThrow();
   expect(() => dashboardOptions(["--max-steps", "5"])).toThrow();

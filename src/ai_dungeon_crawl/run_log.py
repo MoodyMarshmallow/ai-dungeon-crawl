@@ -9,7 +9,7 @@ from .observation_history import observation_journal
 
 
 @contextmanager
-def episode_log(directory: Path):
+def episode_log(directory: Path, *, initial_game_time=None):
     """Create separate model, game-state, and tile journals outside the sandbox.
 
     Model content is buffered until its request ends; other events are flushed
@@ -23,7 +23,7 @@ def episode_log(directory: Path):
     turn = None
     request = None
     request_count = 0
-    game_time = None
+    game_time = initial_game_time
     model_parts = {}
     with ExitStack() as stack:
         outputs = {}

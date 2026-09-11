@@ -1,7 +1,9 @@
-from ..contracts import GameAction, GameObservation
+"""Small in-memory game doubles used by unit tests only."""
+
+from ai_dungeon_crawl.contracts import GameAction, GameObservation
 
 
-class MockGameSession:
+class TestGameSession:
     def __init__(self) -> None:
         self.position = 0
         self.closed = False
@@ -22,7 +24,7 @@ class MockGameSession:
         if self.closed or self.position == 3:
             raise RuntimeError("Session is not accepting input")
         if action.key != "l":
-            raise ValueError("This mock accepts only 'l' (move right)")
+            raise ValueError("Test game accepts only 'l'")
         self.position += 1
         return self._observe()
 

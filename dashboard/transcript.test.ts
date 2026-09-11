@@ -3,14 +3,29 @@ import { shellTranscript, activityEntries, turnSummary } from "./transcript";
 import type { ModelRequest } from "./types";
 import type { Submission } from "./types";
 import { runInNewContext } from "node:vm";
+import { applyEvent, emptyState } from "./state";
+
+test("final results capture the execution screen without changing shell output", () => {
+  const state = emptyState({ backend: 'codex', model: null, reasoning_effort: 'low', max_turns: 3, reasoning_summary: true });
+  applyEvent(state, { event: 'execution.submitted', data: { id: 0, code: 'crawl press l', model_requests: 1 } });
+  const observation = { id: 1, screen: 'after key', ended: false };
+  applyEvent(state, { event: 'execution.finished', data: { id: 0, output: '', error: null, status: 'ok', output_truncated: false, observation } });
+  applyEvent(state, { event: 'game.observation', data: { id: 2, screen: 'later', ended: false } });
+  const result = activityEntries(state).find(entry => entry.className === 'result')!;
+  expect(result.label).toBe('Final result');
+  expect(result.observation).toEqual(observation);
+  expect(result.text).toBe('');
+  expect(shellTranscript(state.submissions)).not.toContain('after key');
+});
 
 test("new latest turns open and collapse their predecessor without changing older choices", async () => {
   const app = await Bun.file(new URL("./app.ts", import.meta.url)).text();
   const registration = app.slice(app.indexOf("const latestTurn ="), app.indexOf("turns.set(item.turn, group);") + "turns.set(item.turn, group);".length);
   const turns = new Map<number, { open: boolean }>();
+  const protectedTurns = new Set<number>();
   const add = (turn: number) => {
     const group = { open: false };
-    runInNewContext(registration, { turns, item: { turn }, group });
+    runInNewContext(registration, { turns, protectedTurns, item: { turn }, group });
     return group;
   };
   const first = add(0);
@@ -25,6 +40,13 @@ test("new latest turns open and collapse their predecessor without changing olde
   expect(third.open).toBe(true);
   expect(add(-1).open).toBe(false);
   expect(third.open).toBe(true);
+
+  // User interaction is retained for the run, so a protected predecessor is
+  // not collapsed when a newer turn arrives.
+  protectedTurns.add(2);
+  const fourth = add(3);
+  expect(third.open).toBe(true);
+  expect(fourth.open).toBe(true);
 });
 
 test("turn headings have a separate collapsed-only preview", async () => {
@@ -160,7 +182,9 @@ test("shell pane exposes accessible next-run settings without a keypress limit",
   expect(pane).toContain('id="settings-view" role="tabpanel" aria-labelledby="settings-tab" aria-hidden="true" inert');
   expect(pane).toContain('<select id="setting-model" name="model"');
   expect(pane).toContain('name="reasoning_effort"');
-  expect(pane).toContain('name="max_turns" type="number" min="0"');
+  expect(pane).toContain('name="action_turn_limit" type="number" min="0"');
+  expect(pane).toContain('name="review_turn_limit" type="number" min="0"');
+  expect(pane).toContain('name="episode_limit" type="number" min="1"');
   expect(pane).not.toContain('max_steps');
   expect(pane).not.toContain('type="submit"');
 });

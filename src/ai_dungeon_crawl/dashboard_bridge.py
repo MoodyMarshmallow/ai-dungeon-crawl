@@ -34,14 +34,15 @@ async def run(args):
 
     watcher = asyncio.create_task(watch_parent())
     try:
-        await run_episode(args.policy, args.model, args.max_turns, args.game, args.crawl_path,
+        await run_episode(args.policy, args.model, args.max_turns, args.crawl_path,
                           args.manual_path, args.reasoning_effort, args.reasoning_summary,
-                          sink=publish)
+                          sink=publish, review_turn_limit=args.review_turn_limit,
+                          episode_limit=args.episode_limit)
     except asyncio.CancelledError:
-        publish("episode.finished", {"status": "stopped", "stop_reason": "cancelled"})
+        pass  # Session runner already emitted the terminal event.
     except Exception as exc:
         # Provider exception text can contain secrets or request bodies.
-        publish("episode.finished", {"status": "error", "error": type(exc).__name__})
+        pass  # Session runner already emitted the sanitized terminal event.
     finally:
         watcher.cancel()
 
@@ -52,11 +53,13 @@ def main():
     parser.add_argument("--policy", choices=("codex", "pydantic"), default="codex")
     parser.add_argument("--model")
     parser.add_argument("--reasoning-effort", choices=REASONING_EFFORTS, default="default")
-    parser.add_argument("--max-turns", type=int, default=3)
+    parser.add_argument("--max-turns", "--action-turn-limit", dest="max_turns", type=int, default=3)
+    parser.add_argument("--review-turn-limit", type=int, default=3)
+    parser.add_argument("--episode-limit", type=int, default=1)
     parser.add_argument("--reasoning-summary", action="store_true")
     args = parser.parse_args()
-    if args.max_turns < 0:
-        parser.error("Turn limit must be nonnegative")
+    if args.max_turns < 0 or args.review_turn_limit < 0 or args.episode_limit < 1:
+        parser.error("Turn limits must be nonnegative and episode limit must be positive")
     if args.policy == "codex" and not args.model:
         args.model = "gpt-5.6-luna"
     if not args.model:

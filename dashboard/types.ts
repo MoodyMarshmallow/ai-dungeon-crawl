@@ -4,8 +4,10 @@ export interface Config {
   backend: "codex" | "pydantic";
   model: string | null;
   reasoning_effort: ReasoningEffort;
-  max_turns: number;
-  game: "dcss" | "mock";
+  max_turns?: number;
+  action_turn_limit?: number;
+  review_turn_limit?: number;
+  episode_limit?: number;
   crawl_path?: string;
   manual_path?: string;
   reasoning_summary: boolean;
@@ -38,6 +40,8 @@ export interface ModelPart {
   truncated: boolean;
 }
 export interface ModelRequest {
+  mode?: "action" | "review";
+  episode?: number;
   id: number;
   turn: number;
   status: string;
@@ -45,6 +49,9 @@ export interface ModelRequest {
   parts: Record<string, ModelPart>;
 }
 export interface Submission {
+  mode?: "action" | "review";
+  episode?: number;
+  observation?: Observation;
   id: number;
   code: string;
   model_requests: number | null;
@@ -55,6 +62,8 @@ export interface Submission {
   keys: string[];
 }
 export interface State {
+  mode: "action" | "review";
+  episode: number;
   config: Config;
   status: "idle" | "running" | "completed" | "stopped" | "error";
   phase: string;
@@ -73,6 +82,7 @@ export interface State {
   stop_reason: string | null;
 }
 export type HarnessEvent =
+  | { event: "mode.changed"; data: { mode: "action" | "review"; episode: number } }
   | { event: "game.tiles"; data: { messages: Record<string, unknown>[] } }
   | { event: "game.observation"; data: Observation }
   | {
@@ -107,6 +117,7 @@ export type HarnessEvent =
   | {
       event: "execution.finished";
       data: {
+        observation?: Observation;
         id: number;
         output: string;
         error: string | null;

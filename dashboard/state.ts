@@ -2,6 +2,8 @@ import type { Config, HarnessEvent, State } from "./types";
 
 export function emptyState(config: Config, run_id = 0): State {
   return {
+    mode: "action",
+    episode: 1,
     config,
     status: "idle",
     phase: "Ready to run",
@@ -26,6 +28,15 @@ export function applyEvent(state: State, message: HarnessEvent): void {
   const model = state.models.at(-1);
   const submission = state.submissions.at(-1);
   switch (message.event) {
+    case "mode.changed":
+      if (message.data.mode === "action" && message.data.episode !== state.episode) {
+        state.observation = null;
+        state.actions = 0;
+      }
+      state.mode = message.data.mode;
+      state.episode = message.data.episode;
+      state.phase = state.mode === "review" ? "Reviewing episode" : "Starting game";
+      break;
     case "game.observation":
       state.observation = message.data;
       break;
@@ -47,6 +58,8 @@ export function applyEvent(state: State, message: HarnessEvent): void {
       state.requests++;
       state.phase = "Model streaming";
       state.models.push({
+        mode: state.mode,
+        episode: state.episode,
         id: state.requests,
         turn: state.turn ?? 0,
         status: "streaming",
@@ -97,6 +110,8 @@ export function applyEvent(state: State, message: HarnessEvent): void {
     case "execution.submitted":
       state.phase = "Executing shell";
       state.submissions.push({
+        mode: state.mode,
+        episode: state.episode,
         ...message.data,
         output: "",
         error: null,
@@ -116,8 +131,8 @@ export function applyEvent(state: State, message: HarnessEvent): void {
       break;
     case "execution.finished":
       if (submission) {
-        const { output, error, status, output_truncated } = message.data;
-        Object.assign(submission, { output, error, status, output_truncated });
+        const { output, error, status, output_truncated, observation } = message.data;
+        Object.assign(submission, { output, error, status, output_truncated, observation: submission.mode === "review" ? undefined : observation });
       }
       break;
     case "episode.finished":

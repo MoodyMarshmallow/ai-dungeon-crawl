@@ -1,4 +1,4 @@
-import type { State, Submission } from "./types";
+import type { State, Submission, Observation } from "./types";
 import { shellAnsi, terminalText } from "./rendering";
 
 /** Use the first available reasoning line without including later thoughts or tool calls. */
@@ -50,10 +50,16 @@ export function activityEntries(state: Pick<State, "models" | "submissions">) {
   const result: {
     id: string;
     turn: number;
+    mode?: "action" | "review";
+    episode?: number;
     className: string;
     label: string;
     text: string;
     format: "bash" | "python" | "json" | "markdown" | "text";
+    observation?: Observation;
+    status?: string;
+    error?: string | null;
+    outputTruncated?: boolean;
   }[] = [];
   const turns = new Set([
     ...state.models.map((model) => model.turn),
@@ -80,6 +86,8 @@ export function activityEntries(state: Pick<State, "models" | "submissions">) {
         if (content)
           result.push({
             id: `model:${request.id}:${index}`,
+            mode: request.mode,
+            episode: request.episode,
             turn,
             className: `model-part ${part.kind}`,
             label:
@@ -99,14 +107,20 @@ export function activityEntries(state: Pick<State, "models" | "submissions">) {
         content +=
           (content.endsWith("\n") || !content ? "" : "\n") + submission.error;
       if (submission.output_truncated) content += "\n[Output truncated]";
-      if (!content && submission.status !== "running")
+      if (!content && !submission.observation && submission.status !== "running")
         content = submission.status === "ok" ? "No output" : submission.status;
-      if (content)
+      if (content || submission.observation)
         result.push({
           id: `result:${submission.id}`,
+          mode: submission.mode,
+          episode: submission.episode,
           turn,
           className: "result",
-          label: "Execution result",
+          label: "Final result",
+          observation: submission.observation,
+          status: submission.status,
+          error: submission.error,
+          outputTruncated: submission.output_truncated,
           text: content,
           format: "text",
         });
