@@ -54,7 +54,7 @@ class EpisodeRunner:
 
             while not observation.ended and len(turns) < max_turns:
                 emit("turn.started", id=len(turns))
-                turn = await self._policy.request_turn(observation, tuple(turns))
+                turn = await self._policy.request_turn(tuple(turns))
                 emit("execution.submitted", id=len(turns), code=turn.code,
                      model_requests=turn.model_requests, timeout_ms=turn.timeout_ms)
                 first_step = len(steps)

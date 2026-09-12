@@ -6,18 +6,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ai_dungeon_crawl.contracts import GameAction, AgentTurn, GameObservation
+from ai_dungeon_crawl.contracts import GameAction, AgentTurn, GameObservation, Policy
 from helpers import TestGameSession
 from ai_dungeon_crawl.episode import EpisodeRunner
 from ai_dungeon_crawl.shell.terminal import ShellTerminal
 
 
-class CodePolicy:
+class CodePolicy(Policy):
     def __init__(self, *scripts):
         self.scripts = scripts
         self.histories = []
 
-    async def request_turn(self, observation, history):
+    async def request_turn(self, history):
         self.histories.append(history)
         return AgentTurn(self.scripts[len(history) % len(self.scripts)], model_requests=2)
 
@@ -26,8 +26,8 @@ class CodePolicy:
                      "Shell integration requires macOS sandbox-exec")
 class EpisodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_forwards_submission_timeout(self):
-        class TimeoutPolicy:
-            async def request_turn(self, observation, history):
+        class TimeoutPolicy(Policy):
+            async def request_turn(self, history):
                 return AgentTurn('sleep 0.4; echo finished', timeout_ms=2000)
         terminal = ShellTerminal(timeout_seconds=0.1)
         result = await EpisodeRunner(TestGameSession(), TimeoutPolicy(), terminal).run(max_turns=1)
@@ -63,8 +63,8 @@ class EpisodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(game.closed)
 
     async def test_policy_failure_closes_without_sending_input(self):
-        class FailingPolicy:
-            async def request_turn(self, observation, history):
+        class FailingPolicy(Policy):
+            async def request_turn(self, history):
                 raise RuntimeError("Model unavailable")
 
         game = TestGameSession()

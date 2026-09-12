@@ -14,7 +14,7 @@ import tempfile
 import termios
 from typing import Callable, Sequence
 
-from ..contracts import GameAction, GameObservation
+from ..contracts import GameAction, GameObservation, GameSession
 from .terminal import BoundaryDecoder, TerminalScreen
 
 
@@ -28,7 +28,7 @@ def key_bytes(action: GameAction) -> bytes:
     return action.key.encode("utf-8")
 
 
-class DCSSGameSession:
+class DCSSGameSession(GameSession):
     """One game: a real terminal plus a separate spectator tile stream.
 
     Requires the patched non-headless WebTiles build. Its marker follows the

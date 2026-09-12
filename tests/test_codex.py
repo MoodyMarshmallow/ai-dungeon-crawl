@@ -1,3 +1,4 @@
+from ai_dungeon_crawl.config import AgentConfig, SessionConfig
 import json
 import asyncio
 import os
@@ -65,12 +66,12 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             return httpx2.Response(200, headers={'content-type': 'text/event-stream'},
                 text=''.join(f'data: {json.dumps({**event, "sequence_number": i})}\n\n'
                              for i, event in enumerate(stream)))
-        policy = CodexPolicy('test-model', auth_path=self.auth, initial_prompt='Win')
+        policy = CodexPolicy(AgentConfig(model='test-model'), auth_path=self.auth, initial_prompt='Win')
         history = ()
         with observe_events(lambda event, data: logged.append((event, data))):
             for index in range(2):
                 policy.http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
-                turn = await policy.request_turn(GameObservation(0, 'secret screen'), history)
+                turn = await policy.request_turn(history)
                 history += (AgentTurnRecord(index, turn, ExecutionResult(GameObservation(0, 'secret screen'),
                     'actual output', 'actual error', 'timeout', True), ()),)
         wire = requests[1]['input']
@@ -99,8 +100,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
     async def request(self, handler, **kwargs):
         client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
         try:
-            return await CodexPolicy("test-model", auth_path=self.auth, http_client=client,
-                                     **kwargs).request_turn(GameObservation(0, "screen"), ())
+            return await CodexPolicy(AgentConfig(model="test-model", **kwargs), auth_path=self.auth, http_client=client).request_turn(())
         finally:
             await client.aclose()
 

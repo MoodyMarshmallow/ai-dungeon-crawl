@@ -1,3 +1,4 @@
+from ai_dungeon_crawl.config import AgentConfig, SessionConfig
 import asyncio
 import json
 import shutil
@@ -32,8 +33,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
             yield {1: DeltaToolCall(json_args='ss"}')}
 
         with observe_events(record):
-            task = asyncio.create_task(PydanticPolicy(FunctionModel(stream_function=stream)).request_turn(
-                GameObservation(0, "screen"), ()))
+            task = asyncio.create_task(PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(stream_function=stream)).request_turn(()))
         try:
             await asyncio.wait_for(preview.wait(), 5)
             self.assertFalse(task.done())
@@ -57,7 +57,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         with observe_events(lambda event, data: seen.append(event)):
             with self.assertRaises(UnexpectedModelBehavior):
-                await PydanticPolicy(FunctionModel(stream_function=stream)).request_turn(GameObservation(0, "x"), ())
+                await PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(stream_function=stream)).request_turn(())
         self.assertEqual(seen.count("model.started"), 2)
 
     async def test_multiple_streamed_calls_are_still_rejected(self):
@@ -66,7 +66,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                    1: DeltaToolCall(name="execute_shell", json_args='{"code":"pass"}', tool_call_id="b")}
         with observe_events(lambda *_: None):
             with self.assertRaisesRegex(ValueError, "exactly one"):
-                await PydanticPolicy(FunctionModel(stream_function=stream)).request_turn(GameObservation(0, "x"), ())
+                await PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(stream_function=stream)).request_turn(())
 
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("sandbox-exec"), "macOS sandbox required")
     async def test_real_shell_game_and_output_events_precede_completion(self):
@@ -76,7 +76,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 yield {0: DeltaToolCall(name="execute_shell", json_args=json.dumps({
                     "code": 'crawl press l\ncrawl press l\ncrawl press l\nprintf moved'
                 }), tool_call_id="step")}
-            result = await EpisodeRunner(TestGameSession(), PydanticPolicy(FunctionModel(stream_function=stream))).run()
+            result = await EpisodeRunner(TestGameSession(), PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(stream_function=stream))).run()
         kinds = [event for event, _ in seen]
         self.assertEqual(result.stop_reason, "game_exited")
         self.assertEqual(kinds.count("game.step"), 3)

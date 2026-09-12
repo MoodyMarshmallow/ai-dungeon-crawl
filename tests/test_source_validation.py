@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from ai_dungeon_crawl.contracts import AgentTurn, GameObservation, validate_source
-from ai_dungeon_crawl.agent.policies import ShellScript
+from ai_dungeon_crawl.agent.tools.execute_shell import ShellScript
 from ai_dungeon_crawl.shell.terminal import ShellTerminal
 
 

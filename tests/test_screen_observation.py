@@ -9,7 +9,7 @@ from ai_dungeon_crawl.contracts import (
     GameAction,
     ScreenStyle,
 )
-from ai_dungeon_crawl.agent.policies import _execution_feedback
+from ai_dungeon_crawl.agent.tools.execute_shell import execution_feedback
 from ai_dungeon_crawl.game.observation_json import observation_data
 
 
@@ -37,7 +37,7 @@ class ScreenObservationTests(unittest.TestCase):
             (GameStep(before, GameAction("l"), current),),
         )
 
-        payload = json.loads(_execution_feedback(record.execution))
+        payload = json.loads(execution_feedback(record.execution))
         self.assertNotIn('observation', payload)
         self.assertEqual(payload['output'], 'feedback')
         self.assertEqual(set(payload), {'output', 'error', 'status', 'output_truncated'})
@@ -50,7 +50,7 @@ class ScreenObservationTests(unittest.TestCase):
 
         output = json.dumps(observation_data(observation), separators=(',', ':'))
         record = AgentTurnRecord(0, AgentTurn('crawl observe'), ExecutionResult(observation, output), ())
-        prompt = _execution_feedback(record.execution)
+        prompt = execution_feedback(record.execution)
         self.assertLess(len(prompt), 64000)
         payload = json.loads(prompt)
         self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 64000)

@@ -1,3 +1,4 @@
+from ai_dungeon_crawl.config import AgentConfig, SessionConfig
 import json
 import os
 from pathlib import Path
@@ -9,8 +10,9 @@ from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 
 from ai_dungeon_crawl.agent.prompts import ActionPrompts, MAX_PROMPT_BYTES, base_prompts, load_prompts, read_only_prompt
-from ai_dungeon_crawl.agent.policies import PydanticPolicy, ShellScript
-from ai_dungeon_crawl.contracts import AgentTurn, AgentTurnRecord, ExecutionResult, GameObservation
+from ai_dungeon_crawl.agent.policies import PydanticPolicy
+from ai_dungeon_crawl.agent.tools.execute_shell import ShellScript
+from ai_dungeon_crawl.contracts import AgentTurn, AgentTurnRecord, ExecutionResult, GameObservation, Policy
 from ai_dungeon_crawl.session import run_session
 from ai_dungeon_crawl.shell.review_files import prepare_files, publish_artifacts
 from test_session import FakeGame, FakeTerminal
@@ -138,10 +140,10 @@ class PromptPolicyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('META_ONLY', combined)
                 self.assertNotIn('purpose:', combined)
                 return ModelResponse(parts=[ToolCallPart('execute_shell', {'code': ':'}, f'call-{len(requests)}')])
-            policy = PydanticPolicy(FunctionModel(model), prompts=prompts)
+            policy = PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(model), prompts=prompts)
             observation = GameObservation(0, '')
-            turn = await policy.request_turn(observation, ())
-            await policy.request_turn(observation, (AgentTurnRecord(0, turn, ExecutionResult(observation, 'feedback'), ()),))
+            turn = await policy.request_turn(())
+            await policy.request_turn((AgentTurnRecord(0, turn, ExecutionResult(observation, 'feedback'), ()),))
             self.assertEqual(len(requests), 2)
 
     async def test_read_only_markdown_drives_review_prompt_and_fixed_schema(self):
@@ -156,7 +158,7 @@ class PromptPolicyTests(unittest.IsolatedAsyncioTestCase):
                                  ShellScript.model_fields[field].description)
             self.assertEqual([p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)], [initial_prompt])
             return ModelResponse(parts=[ToolCallPart('execute_shell', {'code': ':'})])
-        await PydanticPolicy(FunctionModel(model), initial_prompt=initial_prompt, profile='review').request_turn(GameObservation(0, ''), ())
+        await PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(model), initial_prompt=initial_prompt, profile='review').request_turn(())
 
     async def test_effective_reference_and_initial_prompt_once_with_custom_prompts(self):
         prompts = ActionPrompts('Custom instructions', 'Custom initial_prompt', 'Custom shell description')
@@ -170,10 +172,10 @@ class PromptPolicyTests(unittest.IsolatedAsyncioTestCase):
             initial_prompts = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)]
             self.assertEqual(initial_prompts, [prompts.initial_prompt])
             return ModelResponse(parts=[ToolCallPart('execute_shell', {'code': ':'}, f'call-{len(requests)}')])
-        policy = PydanticPolicy(FunctionModel(model), prompts=prompts)
+        policy = PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(model), prompts=prompts)
         observation = GameObservation(0, 'not automatically sent')
-        turn = await policy.request_turn(observation, ())
-        await policy.request_turn(observation, (AgentTurnRecord(0, turn, ExecutionResult(observation, 'feedback'), ()),))
+        turn = await policy.request_turn(())
+        await policy.request_turn((AgentTurnRecord(0, turn, ExecutionResult(observation, 'feedback'), ()),))
         self.assertEqual(len(requests), 2)
 
     async def test_review_edits_next_episode_and_new_start_resets(self):
@@ -192,16 +194,16 @@ class PromptPolicyTests(unittest.IsolatedAsyncioTestCase):
         async def start(directory, review_limit):
             seen = []
             outcomes = iter(['death', 'win'])
-            def factory(profile, *, prompts=None):
+            def factory(agent_config, *, profile, prompts=None):
                 if profile == 'action':
                     seen.append(prompts)
-                class Policy:
-                    async def request_turn(self, observation, history):
+                class PolicyDouble(Policy):
+                    async def request_turn(self, history):
                         return AgentTurn(':')
-                return Policy()
+                return PolicyDouble()
             await run_session(directory=directory, game_factory=lambda path: FakeGame(next(outcomes)),
-                              policy_factory=factory, action_turn_limit=1, review_turn_limit=review_limit,
-                              episode_limit=2)
+                              policy_factory=factory, config=SessionConfig(action_turn_limit=1, review_turn_limit=review_limit,
+                              episode_limit=2))
             return seen
 
         with tempfile.TemporaryDirectory() as temp, patch('ai_dungeon_crawl.session.ShellTerminal', PublishingTerminal):

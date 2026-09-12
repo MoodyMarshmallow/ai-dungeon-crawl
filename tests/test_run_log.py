@@ -1,3 +1,4 @@
+from ai_dungeon_crawl.config import AgentConfig, SessionConfig
 import asyncio
 from datetime import datetime, timezone
 import json
@@ -14,6 +15,7 @@ from pydantic_ai.models.function import FunctionModel, DeltaThinkingPart, DeltaT
 from ai_dungeon_crawl.cli import run_episode, new_run_directory
 from ai_dungeon_crawl.events import emit, events_enabled, observe_events, record_events
 from ai_dungeon_crawl.agent.policies import PydanticPolicy
+from ai_dungeon_crawl.contracts import Policy
 from ai_dungeon_crawl.run_log import episode_log
 from helpers import TestGameSession
 
@@ -169,13 +171,13 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
             yield {0: DeltaThinkingPart(content="A public summary. ", signature="private-signature")}
             yield {0: DeltaThinkingPart(content="More detail.")}
             yield {1: DeltaToolCall(name="execute_shell", json_args=json.dumps({"code": code}))}
-        policy = PydanticPolicy(FunctionModel(stream_function=stream))
+        policy = PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(stream_function=stream))
         display = []
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "run"
             with patch("ai_dungeon_crawl.cli.create_policy", return_value=policy), \
                     patch("ai_dungeon_crawl.cli.create_game", return_value=TestGameSession()):
-                result = await run_episode("codex", "test-model", 1,
+                result = await run_episode(SessionConfig(action_agent=AgentConfig(model="test-model"), action_turn_limit=1),
                     run_dir=directory, sink=lambda event, data: display.append((event, data)))
             raw = (directory / "model.jsonl").read_text()
             rows = [json.loads(line) for line in raw.splitlines()]
@@ -206,14 +208,14 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
             with patch("ai_dungeon_crawl.cli.create_policy", side_effect=ValueError("secret-token")), \
                     patch("ai_dungeon_crawl.cli.create_game", return_value=TestGameSession()):
                 with self.assertRaises(ValueError):
-                    await run_episode("codex", "test", 1, run_dir=directory)
+                    await run_episode(SessionConfig(action_agent=AgentConfig(model="test"), action_turn_limit=1), run_dir=directory)
             raw = (directory / "model.jsonl").read_text()
             self.assertNotIn("secret-token", raw)
             self.assertEqual(json.loads(raw.splitlines()[-1])["data"], {"status": "error", "error": "ValueError"})
 
     async def test_cancellation_retains_partial_model_activity(self):
         started = asyncio.Event()
-        class WaitingPolicy:
+        class WaitingPolicy(Policy):
             async def request_turn(self, *_):
                 emit("model.started")
                 emit("model.part", index=0, kind="reasoning", text="Partial", replace=True)
@@ -223,7 +225,7 @@ class LoggedEpisodeTests(unittest.IsolatedAsyncioTestCase):
             directory = Path(temp)
             with patch("ai_dungeon_crawl.cli.create_policy", return_value=WaitingPolicy()), \
                     patch("ai_dungeon_crawl.cli.create_game", return_value=TestGameSession()):
-                task = asyncio.create_task(run_episode("codex", "test", 1, run_dir=directory))
+                task = asyncio.create_task(run_episode(SessionConfig(action_agent=AgentConfig(model="test"), action_turn_limit=1), run_dir=directory))
                 await asyncio.wait_for(started.wait(), 5)
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):

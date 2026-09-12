@@ -4,8 +4,8 @@ import json
 import os
 import signal
 
-from .cli import add_game_arguments, run_episode
-from .agent.policies import REASONING_EFFORTS
+from .cli import add_game_arguments, add_session_arguments, session_config_from_args, run_episode
+from .config import SessionConfig
 
 
 def publish(event, data):
@@ -13,7 +13,7 @@ def publish(event, data):
     print(json.dumps({"event": event, "data": data}), flush=True)
 
 
-async def run(args):
+async def run(args, config: SessionConfig):
     """Run one episode; SIGTERM cancels it through the runner's normal cleanup."""
     loop = asyncio.get_running_loop()
     task = asyncio.current_task()
@@ -34,10 +34,7 @@ async def run(args):
 
     watcher = asyncio.create_task(watch_parent())
     try:
-        await run_episode(args.policy, args.model, args.max_turns, args.crawl_path,
-                          args.manual_path, args.reasoning_effort, args.reasoning_summary,
-                          sink=publish, review_turn_limit=args.review_turn_limit,
-                          episode_limit=args.episode_limit)
+        await run_episode(config, args.crawl_path, args.manual_path, sink=publish)
     except asyncio.CancelledError:
         pass  # Session runner already emitted the terminal event.
     except Exception as exc:
@@ -50,21 +47,13 @@ async def run(args):
 def main():
     parser = argparse.ArgumentParser(description="Private dashboard event bridge")
     add_game_arguments(parser)
-    parser.add_argument("--policy", choices=("codex", "pydantic"), default="codex")
-    parser.add_argument("--model")
-    parser.add_argument("--reasoning-effort", choices=REASONING_EFFORTS, default="default")
-    parser.add_argument("--max-turns", "--action-turn-limit", dest="max_turns", type=int, default=3)
-    parser.add_argument("--review-turn-limit", type=int, default=3)
-    parser.add_argument("--episode-limit", type=int, default=1)
-    parser.add_argument("--reasoning-summary", action="store_true")
+    add_session_arguments(parser, reasoning_summary=False)
     args = parser.parse_args()
-    if args.max_turns < 0 or args.review_turn_limit < 0 or args.episode_limit < 1:
-        parser.error("Turn limits must be nonnegative and episode limit must be positive")
-    if args.policy == "codex" and not args.model:
-        args.model = "gpt-5.6-luna"
-    if not args.model:
-        parser.error("The Pydantic backend requires --model provider:model")
-    asyncio.run(run(args))
+    try:
+        config = session_config_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    asyncio.run(run(args, config))
 
 
 if __name__ == "__main__":

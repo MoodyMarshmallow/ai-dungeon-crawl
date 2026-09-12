@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .contracts import AgentTurnRecord, GameObservation, StopExecution
+from .config import SessionConfig
 from .episode import EpisodeRunner
 from .events import emit, observe_events
 from .run_log import episode_log
@@ -24,7 +25,7 @@ async def run_review(policy, terminal, *, max_turns):
     try:
         for turn_id in range(max_turns):
             emit("turn.started", id=turn_id)
-            turn = await policy.request_turn(observation, tuple(turns))
+            turn = await policy.request_turn(tuple(turns))
             emit("execution.submitted", id=turn_id, code=turn.code,
                  model_requests=turn.model_requests, timeout_ms=turn.timeout_ms)
             try:
@@ -44,12 +45,7 @@ async def run_review(policy, terminal, *, max_turns):
 
 
 async def run_session(*, directory: Path, game_factory, policy_factory,
-                      action_turn_limit: int, review_turn_limit: int = 3,
-                      episode_limit: int = 1, manual_path=None, config=None, sink=None):
-    if any(type(n) is not int or n < 0 for n in (action_turn_limit, review_turn_limit)):
-        raise ValueError("Turn limits must be nonnegative integers")
-    if type(episode_limit) is not int or episode_limit < 1:
-        raise ValueError("Episode limit must be a positive integer")
+                      config: SessionConfig, manual_path=None, sink=None):
     directory = Path(directory)
     artifacts = directory / "artifacts"
     # A Start owns a new directory: never reuse or clear a previous run's state.
@@ -86,29 +82,29 @@ async def run_session(*, directory: Path, game_factory, policy_factory,
 
     with observe_events(relay) if sink else nullcontext():
         try:
-            for number in range(1, episode_limit + 1):
+            for number in range(1, config.episode_limit + 1):
                 # Keep the established first-episode log location for CLI consumers.
                 action_dir = directory if number == 1 else directory / f"episode-{number:03d}" / "action"
                 phase_ids.clear()
                 with logged_phase(action_dir):
                     if number == 1:
-                        emit("episode.started", config=config or {}, log_path=str(action_dir / "model.jsonl"))
+                        emit("episode.started", config=config.event_data(), log_path=str(action_dir / "model.jsonl"))
                     emit("mode.changed", mode="action", episode=number)
-                    emit("phase.started", mode="action", episode=number, config=config or {})
+                    emit("phase.started", mode="action", episode=number, config=asdict(config.action_agent))
                     prompts = (load_prompts(artifacts / "snapshot" / "prompts" / "agent_editable" / "action")
                                if (artifacts / "snapshot").exists() else base_prompts())
-                    game = game_factory(action_dir)
-                    policy = policy_factory("action", prompts=prompts)
+                    policy = policy_factory(config.action_agent, profile="action", prompts=prompts)
                     reference = (policy.prompt_reference() if hasattr(policy, "prompt_reference")
                                  else {"prompts": prompts.effective_text()})
-                    reference["session_config"] = config or {}
+                    reference["session_config"] = config.event_data()
                     reference["shell_config"] = {"default_timeout_ms": 5000, "max_output_chars": 32768}
                     fd = os.open(action_dir / "action-prompts.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                     with os.fdopen(fd, "w", encoding="utf-8") as prompt_log:
                         json.dump(reference, prompt_log, ensure_ascii=False, indent=2)
                     emit("action.prompts", **reference)
                     terminal = ShellTerminal(manual_path=manual_path, artifacts_path=artifacts)
-                    result = await EpisodeRunner(game, policy, terminal).run(max_turns=action_turn_limit)
+                    game = game_factory(action_dir)
+                    result = await EpisodeRunner(game, policy, terminal).run(max_turns=config.action_turn_limit)
                     emit("phase.finished", mode="action", episode=number, stop_reason=result.stop_reason)
                     if result.stop_reason != "death":
                         emit("episode.finished", status="completed", stop_reason=result.stop_reason)
@@ -126,13 +122,13 @@ async def run_session(*, directory: Path, game_factory, policy_factory,
                 with logged_phase(directory / f"episode-{number:03d}" / "review",
                                   initial_game_time=final_tick):
                     emit("mode.changed", mode="review", episode=number)
-                    emit("phase.started", mode="review", episode=number)
-                    policy = policy_factory("review")
+                    emit("phase.started", mode="review", episode=number, config=asdict(config.review_agent))
+                    policy = policy_factory(config.review_agent, profile="review")
                     terminal = ShellTerminal(profile="review", artifacts_path=artifacts,
                                              review_log_path=action_dir, manual_path=manual_path)
-                    await run_review(policy, terminal, max_turns=review_turn_limit)
+                    await run_review(policy, terminal, max_turns=config.review_turn_limit)
                     emit("phase.finished", mode="review", episode=number, stop_reason="turn_limit")
-                    if number == episode_limit:
+                    if number == config.episode_limit:
                         emit("episode.finished", status="completed", stop_reason=result.stop_reason)
                         terminal_emitted = True
             return result

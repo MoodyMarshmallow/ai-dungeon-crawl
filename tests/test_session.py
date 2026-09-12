@@ -1,3 +1,4 @@
+from ai_dungeon_crawl.config import AgentConfig, SessionConfig
 import asyncio
 import json
 import os
@@ -7,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ai_dungeon_crawl.contracts import AgentTurn, ExecutionResult, GameObservation, GameAction
+from ai_dungeon_crawl.contracts import AgentTurn, ExecutionResult, GameObservation, GameAction, GameSession, Policy
 from ai_dungeon_crawl.session import run_session, run_review
 from ai_dungeon_crawl.shell.terminal import ShellTerminal
 from ai_dungeon_crawl.agent.policies import PydanticPolicy, REVIEW_SHELL_DESCRIPTION
@@ -15,7 +16,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
 
 
-class FakeGame:
+class FakeGame(GameSession):
     def __init__(self, outcome):
         self.outcome = outcome
         self.closed = False
@@ -73,8 +74,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                        if isinstance(p, UserPromptPart)]
             self.assertNotIn("secret screen", str(prompts))
             return ModelResponse(parts=[ToolCallPart("execute_shell", {"code": "ls logs"})])
-        policy = PydanticPolicy(FunctionModel(model), profile="review", initial_prompt="Review death")
-        turn = await policy.request_turn(GameObservation(0, "secret screen"), ())
+        policy = PydanticPolicy(AgentConfig(backend="pydantic", model="test:model"), model=FunctionModel(model), profile="review", initial_prompt="Review death")
+        turn = await policy.request_turn(())
         self.assertEqual(turn.code, "ls logs")
 
     async def run_case(self, outcomes, *, review_turn_limit=2, episode_limit=3, cancel=False):
@@ -87,26 +88,26 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             games.append(game)
             return game
 
-        def policy_factory(profile, *, prompts=None):
-            class Policy:
+        def policy_factory(agent_config, *, profile, prompts=None):
+            class PolicyDouble(Policy):
                 def __init__(self):
                     self.profile, self.histories = profile, []
 
-                async def request_turn(self, observation, history):
+                async def request_turn(self, history):
                     self.histories.append(history)
                     if profile == "review" and cancel:
                         review_started.set()
                         await asyncio.Event().wait()
                     return AgentTurn("review" if profile == "review" else "action")
-            policy = Policy()
+            policy = PolicyDouble()
             policies.append(policy)
             return policy
 
         with tempfile.TemporaryDirectory() as temp, patch(
                 "ai_dungeon_crawl.session.ShellTerminal", FakeTerminal):
             task = asyncio.create_task(run_session(directory=Path(temp), game_factory=game_factory,
-                policy_factory=policy_factory, action_turn_limit=1, review_turn_limit=review_turn_limit,
-                episode_limit=episode_limit, sink=lambda event, data: events.append((event, data))))
+                policy_factory=policy_factory, config=SessionConfig(action_turn_limit=1, review_turn_limit=review_turn_limit,
+                episode_limit=episode_limit), sink=lambda event, data: events.append((event, data))))
             if cancel:
                 await asyncio.wait_for(review_started.wait(), 2)
                 task.cancel()
@@ -202,15 +203,15 @@ crawl observe"""
             games.append(game)
             return game
 
-        def policy_factory(profile, *, prompts=None):
+        def policy_factory(agent_config, *, profile, prompts=None):
             if profile == "review":
                 self.assertIsNotNone(games[0]._process.returncode)
                 code = review_code
             else:
-                code = death_code if len(games) == 1 else next_code
+                code = death_code if len(games) == 0 else next_code
 
-            class DeterministicPolicy:
-                async def request_turn(inner, observation, history):
+            class DeterministicPolicy(Policy):
+                async def request_turn(inner, history):
                     self.assertEqual(history, ())
                     return AgentTurn(code, timeout_ms=30000)
 
@@ -222,7 +223,7 @@ crawl observe"""
             directory = Path(temp)
             result = await asyncio.wait_for(run_session(
                 directory=directory, game_factory=game_factory, policy_factory=policy_factory,
-                action_turn_limit=1, review_turn_limit=1, episode_limit=2, manual_path=manual,
+                config=SessionConfig(action_turn_limit=1, review_turn_limit=1, episode_limit=2), manual_path=manual,
                 sink=lambda event, data: events.append((event, data))), 60)
             review_rows = [json.loads(line) for line in
                            (directory / "episode-001/review/model.jsonl").read_text().splitlines()]

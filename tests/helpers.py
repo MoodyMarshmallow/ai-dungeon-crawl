@@ -1,9 +1,9 @@
 """Small in-memory game doubles used by unit tests only."""
 
-from ai_dungeon_crawl.contracts import GameAction, GameObservation
+from ai_dungeon_crawl.contracts import GameAction, GameObservation, GameSession
 
 
-class TestGameSession:
+class TestGameSession(GameSession):
     def __init__(self) -> None:
         self.position = 0
         self.closed = False
